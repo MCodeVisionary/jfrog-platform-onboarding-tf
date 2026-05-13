@@ -1,5 +1,5 @@
 module "repos" {
-  source = "../../modules/project-repos"
+  source = "git::https://github.com/MCodeVisionary/jfrog-platform-onboarding-tf.git//terraform/modules/project-repos?ref=project-repos/v1.0.0"
 
   jfrog_url          = var.jfrog_url
   jfrog_access_token = var.jfrog_access_token
