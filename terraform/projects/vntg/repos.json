@@ -1,0 +1,13 @@
+{
+  "project_key": "vntg",
+  "applications": [
+    {
+      "name":          "design",
+      "package_types": ["npm", "docker"]
+    },
+    {
+      "name":          "gateway",
+      "package_types": ["npm", "python", "docker", "helm"]
+    }
+  ]
+}

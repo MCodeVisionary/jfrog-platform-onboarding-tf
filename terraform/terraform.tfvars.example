@@ -1,0 +1,36 @@
+# ── JFrog Platform URL ────────────────────────────────────────────────────────
+#
+# Your JFrog instance URL. Copy it from the browser address bar when logged in.
+# Format depends on how your instance is hosted:
+#
+#   JFrog Cloud (most common):
+#     jfrog_url = "https://<your-org>.jfrog.io"
+#     e.g.  jfrog_url = "https://acme.jfrog.io"
+#
+#   Self-hosted with custom domain:
+#     jfrog_url = "https://jfrog.<your-company>.com"
+#
+#   Self-hosted with port:
+#     jfrog_url = "https://<host>:<port>"
+#
+# Do NOT include a trailing slash.
+#
+jfrog_url = "https://<your-org>.jfrog.io"
+
+# ── JFrog Platform Admin access token ────────────────────────────────────────
+#
+# Generate a token with Platform Admin scope:
+#   JFrog UI → Administration → Identity & Access → Access Tokens
+#   → Generate Token → scope: Platform Admin → copy the token
+#
+# The token is shown only once. Store it securely.
+# Do NOT commit this file to source control.
+#
+jfrog_access_token = "eyJ..."
+
+# ── Config file (optional) ────────────────────────────────────────────────────
+#
+# Path to the JSON file that defines all projects, applications, stages,
+# and package types. Defaults to "projects.json" in this directory.
+#
+# config_file = "projects.json"

@@ -1,0 +1,13 @@
+{
+  "project_key": "cmrc",
+  "applications": [
+    {
+      "name":          "payment",
+      "package_types": ["npm", "python", "docker", "helm", "terraform"]
+    },
+    {
+      "name":          "catalog",
+      "package_types": ["npm", "docker", "helm"]
+    }
+  ]
+}

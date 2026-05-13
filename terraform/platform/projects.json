@@ -1,0 +1,25 @@
+{
+  "projects": {
+    "Commerce": {
+      "key":             "cmrc",
+      "display_name":    "Commerce",
+      "description":     "Commerce product — payment and catalog applications",
+      "max_storage_gib": 500,
+      "stages":          ["all"]
+    },
+    "Vantage": {
+      "key":             "vntg",
+      "display_name":    "Vantage",
+      "description":     "Vantage product — design and gateway applications",
+      "max_storage_gib": 500,
+      "stages":          ["all"]
+    },
+    "Wallet": {
+      "key":             "wlt",
+      "display_name":    "Wallet",
+      "description":     "Wallet product — stream and store applications",
+      "max_storage_gib": 500,
+      "stages":          ["all"]
+    }
+  }
+}

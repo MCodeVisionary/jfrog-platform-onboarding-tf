@@ -1,0 +1,13 @@
+{
+  "project_key": "wlt",
+  "applications": [
+    {
+      "name":          "stream",
+      "package_types": ["python", "docker", "helm"]
+    },
+    {
+      "name":          "store",
+      "package_types": ["npm", "docker"]
+    }
+  ]
+}

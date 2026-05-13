@@ -1,0 +1,34 @@
+# Terraform — state, plans, locks, providers, generated logs
+**/.terraform/
+**/terraform.tfstate
+**/terraform.tfstate.*
+**/tfplan
+**/apply.log
+**/apply-checklist.log
+**/crash.log
+**/crash.*.log
+**/.terraformrc
+**/terraform.rc
+
+# Secrets — credentials must never be committed
+**/terraform.tfvars
+**/*.auto.tfvars
+**/terraform.tfvars.bak
+.env
+.env.*
+
+# Editor / OS noise
+.DS_Store
+.vscode/
+.idea/
+*.swp
+*.swo
+
+# Claude Code working directory
+.claude/
+
+# Legacy single-state layout (archived during the scale refactor)
+terraform/_legacy_flat_layout/
+
+# Lock files we DO want to commit (override the exclusion above):
+# .terraform.lock.hcl is intentionally NOT in .gitignore — it pins provider versions.
