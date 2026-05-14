@@ -1,0 +1,5 @@
+blank_issues_enabled: false
+contact_links:
+  - name: Documentation
+    url: https://github.com/MCodeVisionary/jfrog-platform-onboarding-tf/blob/main/README.md
+    about: How the JFrog platform onboarding terraform is structured and operated.

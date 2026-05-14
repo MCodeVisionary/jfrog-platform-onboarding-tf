@@ -1,0 +1,160 @@
+name: Drift Detection
+
+on:
+  schedule:
+    - cron: '0 9 * * *'   # daily at 09:00 UTC
+  workflow_dispatch:       # allow manual runs from the Actions tab
+
+permissions:
+  contents: read
+  issues: write
+  id-token: write
+
+env:
+  JFROG_URL: https://mcodevisionaryorg.jfrog.io
+  TF_IN_AUTOMATION: "true"
+  TF_INPUT: "false"
+
+jobs:
+  drift-check:
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        layer:
+          - platform
+          - projects/cmrc
+          - projects/vntg
+          - projects/wlt
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: hashicorp/setup-terraform@v3
+        with:
+          terraform_version: "1.6.0"
+          terraform_wrapper: false
+
+      - name: Exchange GitHub OIDC for JFrog token (plan scope)
+        id: jf
+        uses: actions/github-script@v7
+        env:
+          JFROG_URL: ${{ env.JFROG_URL }}
+        with:
+          script: |
+            const oidc = await core.getIDToken('jfrog-tf-state-plan');
+            const fetch = (await import('node-fetch')).default;
+            const res = await fetch(`${process.env.JFROG_URL}/access/api/v1/oidc/token`, {
+              method: 'POST',
+              headers: { 'Content-Type': 'application/json' },
+              body: JSON.stringify({
+                subject_token: oidc,
+                subject_token_type: 'urn:ietf:params:oauth:token-type:id_token',
+                provider_name: 'github',
+              })
+            });
+            const body = await res.json();
+            if (!body.access_token) {
+              core.setFailed(`OIDC exchange failed: ${JSON.stringify(body)}`);
+              return;
+            }
+            core.setSecret(body.access_token);
+            const payload = JSON.parse(Buffer.from(body.access_token.split('.')[1], 'base64').toString());
+            const username = (payload.sub || '').split('/').pop();
+            core.setOutput('access_token', body.access_token);
+            core.setOutput('username', username);
+
+      - name: Terraform plan -refresh-only
+        id: tfplan
+        env:
+          TF_HTTP_USERNAME: ${{ steps.jf.outputs.username }}
+          TF_HTTP_PASSWORD: ${{ steps.jf.outputs.access_token }}
+          TF_VAR_jfrog_url: ${{ env.JFROG_URL }}
+          TF_VAR_jfrog_access_token: ${{ steps.jf.outputs.access_token }}
+        working-directory: terraform/${{ matrix.layer }}
+        run: |
+          set -o pipefail
+          terraform init -no-color | tail -5
+          set +e
+          # -detailed-exitcode: 0 = no changes, 1 = error, 2 = drift
+          terraform plan -refresh-only -detailed-exitcode -no-color 2>&1 | tee plan.out
+          ec=${PIPESTATUS[0]}
+          set -e
+          {
+            echo "exit_code=$ec"
+            echo "drift=$( [ $ec -eq 2 ] && echo true || echo false )"
+            echo "errored=$( [ $ec -eq 1 ] && echo true || echo false )"
+          } >> "$GITHUB_OUTPUT"
+          # don't fail the step on drift — we want to report it
+          if [ $ec -eq 1 ]; then exit 1; fi
+          exit 0
+
+      - name: Open or update drift Issue (red-bold banner)
+        if: steps.tfplan.outputs.drift == 'true' || steps.tfplan.outputs.errored == 'true'
+        uses: actions/github-script@v7
+        env:
+          LAYER:   ${{ matrix.layer }}
+          DRIFT:   ${{ steps.tfplan.outputs.drift }}
+          ERRORED: ${{ steps.tfplan.outputs.errored }}
+          SHA:     ${{ github.sha }}
+        with:
+          script: |
+            const fs = require('fs');
+            let plan = '(plan output unavailable)';
+            try {
+              const txt = fs.readFileSync(`terraform/${process.env.LAYER}/plan.out`, 'utf8');
+              const tail = txt.split('\n').slice(-200).join('\n');
+              plan = tail.length > 40000 ? tail.slice(-40000) : tail;
+            } catch (e) {}
+
+            const title = `[drift] ${process.env.LAYER} — ${new Date().toISOString().slice(0,10)}`;
+            const banner = '> [!CAUTION]\n> **Drift has been detected.** State diverged from configuration for this layer.';
+
+            const errNote = process.env.ERRORED === 'true'
+              ? '\n\n_Note: refresh-only plan **errored**, so the drift indicator may be incomplete._'
+              : '';
+
+            const body = [
+              banner + errNote,
+              '',
+              `**Layer:** \`${process.env.LAYER}\`  `,
+              `**Detected at commit:** \`${process.env.SHA}\`  `,
+              `**Workflow run:** ${context.payload.repository.html_url}/actions/runs/${context.runId}`,
+              '',
+              '**Resolution path:** open a PR for this layer (any change to `terraform/' + process.env.LAYER + '/`), let PR Validate post a full plan, review and merge. The post-apply comment will confirm convergence.',
+              '',
+              '<details><summary>Refresh-only plan (last 200 lines)</summary>',
+              '',
+              '```hcl',
+              plan,
+              '```',
+              '</details>',
+            ].join('\n');
+
+            // Look for an open drift issue for this same layer; update instead of duplicating.
+            const search = await github.rest.search.issuesAndPullRequests({
+              q: `repo:${context.repo.owner}/${context.repo.repo} is:issue is:open in:title "[drift] ${process.env.LAYER}"`,
+            });
+            const existing = search.data.items[0];
+            if (existing) {
+              await github.rest.issues.update({
+                owner: context.repo.owner,
+                repo: context.repo.repo,
+                issue_number: existing.number,
+                title,
+                body,
+              });
+              await github.rest.issues.createComment({
+                owner: context.repo.owner,
+                repo: context.repo.repo,
+                issue_number: existing.number,
+                body: `Drift re-detected on ${new Date().toISOString()} — issue updated with latest plan.`,
+              });
+            } else {
+              await github.rest.issues.create({
+                owner: context.repo.owner,
+                repo: context.repo.repo,
+                title,
+                body,
+                labels: ['drift', 'terraform', process.env.LAYER.replace('/', '-')],
+              });
+            }

@@ -1,0 +1,89 @@
+name: New JFrog Project
+description: Request a new JFrog Project (creates platform/projects.json entry + scaffolds projects/<key>/)
+title: "[new-project] "
+labels: ["new-project", "platform-admin-review"]
+assignees: []
+body:
+  - type: markdown
+    attributes:
+      value: |
+        ### What this creates
+
+        Approving this issue will result in a PR that:
+        1. Adds an entry to `platform/projects.json`
+        2. Scaffolds `terraform/projects/<key>/` with `main.tf`, `repos.json`, etc.
+        3. Wires the new project into the orchestration scripts
+
+        **Platform admins must review.** Once the PR merges, the apply workflow runs.
+
+  - type: input
+    id: project_key
+    attributes:
+      label: Project key
+      description: Short lowercase identifier (3–6 chars). Will be the prefix for all repos. Cannot be changed later.
+      placeholder: "e.g. cmrc, vntg, wlt"
+    validations:
+      required: true
+
+  - type: input
+    id: display_name
+    attributes:
+      label: Display name
+      description: Human-readable name shown in the JFrog UI.
+      placeholder: "e.g. Commerce"
+    validations:
+      required: true
+
+  - type: textarea
+    id: description
+    attributes:
+      label: Description
+      description: One-line description of what this project's repos hold.
+      placeholder: "e.g. Commerce product — payment and catalog applications"
+    validations:
+      required: true
+
+  - type: dropdown
+    id: max_storage_gib
+    attributes:
+      label: Storage quota (GiB)
+      options:
+        - "100"
+        - "250"
+        - "500"
+        - "1000"
+        - "2000"
+      default: 2
+    validations:
+      required: true
+
+  - type: input
+    id: owning_team
+    attributes:
+      label: GitHub team owning this project
+      description: Team handle that should be added to CODEOWNERS for this project's directory.
+      placeholder: "e.g. @MCodeVisionary/cmrc-team"
+    validations:
+      required: true
+
+  - type: textarea
+    id: initial_applications
+    attributes:
+      label: (Optional) Initial applications and package types
+      description: |
+        One application per line. Format: `app_name: type1, type2, ...`
+        Supported types: npm, python, terraform, docker, helm
+        Leave blank to start with an empty repos.json — apps can be added later via the new-repo workflow.
+      placeholder: |
+        payment: npm, python, docker, helm
+        catalog: npm, docker
+
+  - type: checkboxes
+    id: confirm
+    attributes:
+      label: Confirmations
+      options:
+        - label: I understand a platform admin must approve the resulting PR before changes apply.
+          required: true
+        - label: I have checked that `<project-key>` is not already in use in JFrog.
+          required: true

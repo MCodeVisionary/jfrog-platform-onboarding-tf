@@ -1,0 +1,34 @@
+# ---------------------------------------------------------------------------
+# CODEOWNERS
+#
+# Routes PR review requests automatically based on path. Combined with branch
+# protection requiring 1+ CODEOWNER approval, this enforces who can approve
+# changes to which layer.
+#
+# Replace the placeholder usernames/teams below with your real ones:
+#   @MCodeVisionary/platform-admins   — platform admins (everyone in this team)
+#   @MCodeVisionary/cmrc-team         — Commerce project owners
+#   @MCodeVisionary/vntg-team         — Vantage project owners
+#   @MCodeVisionary/wlt-team          — Wallet project owners
+#
+# If a team doesn't exist yet, create it under your GitHub org first.
+# Until then you can use individual @username handles instead.
+# ---------------------------------------------------------------------------
+
+# Default: anything not matched below needs platform-admin review
+*                                       @MCodeVisionary/platform-admins
+
+# Platform layer (projects, groups, stages, role bindings) — platform admins only
+/terraform/platform/                    @MCodeVisionary/platform-admins
+/terraform/modules/platform/            @MCodeVisionary/platform-admins
+
+# Project-level repo modules — platform admins (module is reusable across projects)
+/terraform/modules/project-repos/       @MCodeVisionary/platform-admins
+
+# Per-project layers — owned by the project's team
+/terraform/projects/cmrc/               @MCodeVisionary/cmrc-team @MCodeVisionary/platform-admins
+/terraform/projects/vntg/               @MCodeVisionary/vntg-team @MCodeVisionary/platform-admins
+/terraform/projects/wlt/                @MCodeVisionary/wlt-team  @MCodeVisionary/platform-admins
+
+# CI workflows and CODEOWNERS itself — platform admins
+/.github/                               @MCodeVisionary/platform-admins

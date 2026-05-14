@@ -1,0 +1,68 @@
+name: New repository (within an existing project)
+description: Add an application (and its package-type repositories) to an existing JFrog Project
+title: "[new-repo] "
+labels: ["new-repo"]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        ### What this creates
+
+        Approving this issue results in a PR that edits the project's `repos.json` to add a new application.
+        The project's team owns the PR review (CODEOWNERS routes it).
+
+        Per application + package type, the apply workflow will provision:
+        - 3 local repos (one per stage: dev/qa/prod)
+        - 1 remote repo per package type (shared across the whole project)
+        - 1 virtual dev repo for developer-facing use
+
+  - type: dropdown
+    id: project
+    attributes:
+      label: Project
+      description: Which existing JFrog Project should this repo belong to?
+      options:
+        - cmrc
+        - vntg
+        - wlt
+    validations:
+      required: true
+
+  - type: input
+    id: application
+    attributes:
+      label: Application name
+      description: Lowercase short name. Will become part of every repo key (e.g. `cmrc-<app>-npm-dev-local`).
+      placeholder: "e.g. payment, gateway, store"
+    validations:
+      required: true
+
+  - type: checkboxes
+    id: package_types
+    attributes:
+      label: Package types
+      description: Pick all that apply. At least one required.
+      options:
+        - label: npm
+        - label: python
+        - label: terraform
+        - label: docker
+        - label: helm
+    validations:
+      required: true
+
+  - type: textarea
+    id: rationale
+    attributes:
+      label: Rationale (optional)
+      description: Why does this app need its own repos? Helpful for reviewers.
+
+  - type: checkboxes
+    id: confirm
+    attributes:
+      label: Confirmations
+      options:
+        - label: The application name does not already exist in this project's repos.json.
+          required: true
+        - label: I have access (or will have) to the project's CODEOWNERS team for review.
+          required: true

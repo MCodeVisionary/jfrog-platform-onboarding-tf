@@ -1,0 +1,204 @@
+name: Apply on merge
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - 'terraform/**'
+
+concurrency:
+  group: apply-main
+  cancel-in-progress: false   # apply jobs must run to completion serially
+
+permissions:
+  contents: read
+  pull-requests: write   # post post-apply comment on the merged PR
+  id-token: write
+
+env:
+  JFROG_URL: https://mcodevisionaryorg.jfrog.io
+  TF_IN_AUTOMATION: "true"
+  TF_INPUT: "false"
+
+jobs:
+  detect-layers:
+    runs-on: ubuntu-latest
+    outputs:
+      layers: ${{ steps.affected.outputs.layers }}
+      pr_number: ${{ steps.pr.outputs.number }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - id: affected
+        name: Detect affected Terraform layers
+        run: |
+          set -euo pipefail
+          # Diff the push range (before..after); use HEAD~1..HEAD if no `before`
+          before="${{ github.event.before }}"
+          after="${{ github.event.after }}"
+          if [ -z "$before" ] || [ "$before" = "0000000000000000000000000000000000000000" ]; then
+            before="HEAD~1"
+          fi
+          changed=$(git diff --name-only "$before" "$after" -- 'terraform/**' || true)
+          echo "Changed files:"
+          echo "$changed"
+
+          layers=()
+          if echo "$changed" | grep -q '^terraform/platform/'; then
+            layers+=("platform")
+          fi
+          for proj_dir in terraform/projects/*/; do
+            proj=$(basename "$proj_dir")
+            if echo "$changed" | grep -q "^terraform/projects/$proj/"; then
+              layers+=("projects/$proj")
+            fi
+          done
+
+          # Note: module/ changes alone do not trigger applies — bump a consumer's
+          # ref= to roll out a new module version.
+
+          if [ ${#layers[@]} -eq 0 ]; then
+            echo "layers=[]" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+          json=$(printf '%s\n' "${layers[@]}" | jq -R . | jq -sc .)
+          echo "layers=$json" >> "$GITHUB_OUTPUT"
+
+      - id: pr
+        name: Find the merged PR number
+        run: |
+          # The push event after a merge contains the merge commit; use GitHub API
+          # to find the PR associated with this commit.
+          pr=$(gh pr list --search "${{ github.sha }}" --state merged --json number --jq '.[0].number' 2>/dev/null || echo "")
+          echo "number=$pr" >> "$GITHUB_OUTPUT"
+        env:
+          GH_TOKEN: ${{ github.token }}
+
+  apply:
+    needs: detect-layers
+    if: needs.detect-layers.outputs.layers != '[]'
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      max-parallel: 5    # cap concurrent applies to avoid JFrog rate limits
+      matrix:
+        layer: ${{ fromJSON(needs.detect-layers.outputs.layers) }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: hashicorp/setup-terraform@v3
+        with:
+          terraform_version: "1.6.0"
+          terraform_wrapper: false
+
+      - name: Exchange GitHub OIDC for JFrog token (apply scope)
+        id: jf
+        uses: actions/github-script@v7
+        env:
+          JFROG_URL: ${{ env.JFROG_URL }}
+        with:
+          script: |
+            const oidc = await core.getIDToken('jfrog-tf-state-apply');
+            const fetch = (await import('node-fetch')).default;
+            const res = await fetch(`${process.env.JFROG_URL}/access/api/v1/oidc/token`, {
+              method: 'POST',
+              headers: { 'Content-Type': 'application/json' },
+              body: JSON.stringify({
+                subject_token: oidc,
+                subject_token_type: 'urn:ietf:params:oauth:token-type:id_token',
+                provider_name: 'github',
+              })
+            });
+            const body = await res.json();
+            if (!body.access_token) {
+              core.setFailed(`OIDC exchange failed: ${JSON.stringify(body)}`);
+              return;
+            }
+            core.setSecret(body.access_token);
+            const payload = JSON.parse(Buffer.from(body.access_token.split('.')[1], 'base64').toString());
+            const username = (payload.sub || '').split('/').pop();
+            core.setOutput('access_token', body.access_token);
+            core.setOutput('username', username);
+
+      - name: Terraform apply
+        id: tfapply
+        env:
+          TF_HTTP_USERNAME: ${{ steps.jf.outputs.username }}
+          TF_HTTP_PASSWORD: ${{ steps.jf.outputs.access_token }}
+          TF_VAR_jfrog_url: ${{ env.JFROG_URL }}
+          TF_VAR_jfrog_access_token: ${{ steps.jf.outputs.access_token }}
+        working-directory: terraform/${{ matrix.layer }}
+        run: |
+          set -o pipefail
+          terraform init -no-color | tail -5
+          set +e
+          terraform apply -auto-approve -no-color 2>&1 | tee apply.out
+          ec=${PIPESTATUS[0]}
+          set -e
+
+          # Parse "Apply complete! Resources: N added, M changed, K destroyed."
+          summary=$(grep -E '^Apply complete!' apply.out | tail -1 || echo "")
+          add=$(echo "$summary"     | sed -nE 's/.*Resources: ([0-9]+) added.*/\1/p');     add=${add:-0}
+          change=$(echo "$summary"  | sed -nE 's/.*added, ([0-9]+) changed.*/\1/p');       change=${change:-0}
+          destroy=$(echo "$summary" | sed -nE 's/.*changed, ([0-9]+) destroyed.*/\1/p');   destroy=${destroy:-0}
+
+          {
+            echo "add=$add"
+            echo "change=$change"
+            echo "destroy=$destroy"
+            echo "exit_code=$ec"
+            echo "status=$( [ $ec -eq 0 ] && echo success || echo failure )"
+          } >> "$GITHUB_OUTPUT"
+          exit $ec
+
+      - name: Comment on merged PR (red-bold drift banner)
+        if: always() && needs.detect-layers.outputs.pr_number != ''
+        uses: actions/github-script@v7
+        env:
+          LAYER:    ${{ matrix.layer }}
+          STATUS:   ${{ steps.tfapply.outputs.status }}
+          ADD:      ${{ steps.tfapply.outputs.add }}
+          CHANGE:   ${{ steps.tfapply.outputs.change }}
+          DESTROY:  ${{ steps.tfapply.outputs.destroy }}
+          SHA:      ${{ github.sha }}
+          PR:       ${{ needs.detect-layers.outputs.pr_number }}
+        with:
+          script: |
+            const fs = require('fs');
+            let tail = '';
+            try {
+              const out = fs.readFileSync(`terraform/${process.env.LAYER}/apply.out`, 'utf8');
+              tail = out.split('\n').slice(-60).join('\n');
+            } catch (e) {}
+
+            const failed = process.env.STATUS !== 'success';
+            const banner = failed
+              ? '> [!CAUTION]\n> **Drift has been detected.** Apply FAILED — immediate attention required.'
+              : '> [!CAUTION]\n> **Drift has been detected.** Apply completed.';
+
+            const counts = failed
+              ? '_(apply did not complete; resource counts unavailable)_'
+              : `**Resources:** ${process.env.ADD} added, ${process.env.CHANGE} changed, ${process.env.DESTROY} destroyed.`;
+
+            const body = [
+              banner,
+              '',
+              `**Layer:** \`${process.env.LAYER}\`  `,
+              `**Commit:** \`${process.env.SHA}\`  `,
+              counts,
+              '',
+              '<details><summary>Apply log (last 60 lines)</summary>',
+              '',
+              '```hcl',
+              tail,
+              '```',
+              '</details>',
+            ].join('\n');
+
+            await github.rest.issues.createComment({
+              owner: context.repo.owner,
+              repo:  context.repo.repo,
+              issue_number: Number(process.env.PR),
+              body,
+            });
