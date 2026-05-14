@@ -8,10 +8,9 @@ on:
 permissions:
   contents: read
   issues: write
-  id-token: write
+  id-token: write          # for OIDC token
 
 env:
-  JFROG_URL: https://mcodevisionaryorg.jfrog.io
   TF_IN_AUTOMATION: "true"
   TF_INPUT: "false"
 
@@ -34,41 +33,42 @@ jobs:
           terraform_version: "1.6.0"
           terraform_wrapper: false
 
-      - name: Exchange GitHub OIDC for JFrog token (plan scope)
-        id: jf
-        uses: actions/github-script@v7
+      - name: Setup JFrog CLI (OIDC, plan scope)
+        uses: jfrog/setup-jfrog-cli@v4
+        id: jfrog-cli
         env:
-          JFROG_URL: ${{ env.JFROG_URL }}
+          JF_URL: ${{ vars.JF_URL }}
         with:
-          script: |
-            const oidc = await core.getIDToken('jfrog-tf-state-plan');
-            const fetch = (await import('node-fetch')).default;
-            const res = await fetch(`${process.env.JFROG_URL}/access/api/v1/oidc/token`, {
-              method: 'POST',
-              headers: { 'Content-Type': 'application/json' },
-              body: JSON.stringify({
-                subject_token: oidc,
-                subject_token_type: 'urn:ietf:params:oauth:token-type:id_token',
-                provider_name: 'github',
-              })
-            });
-            const body = await res.json();
-            if (!body.access_token) {
-              core.setFailed(`OIDC exchange failed: ${JSON.stringify(body)}`);
-              return;
-            }
-            core.setSecret(body.access_token);
-            const payload = JSON.parse(Buffer.from(body.access_token.split('.')[1], 'base64').toString());
-            const username = (payload.sub || '').split('/').pop();
-            core.setOutput('access_token', body.access_token);
-            core.setOutput('username', username);
+          oidc-provider-name: ${{ vars.OIDC_PROVIDER_NAME }}
+          oidc-audience: ${{ vars.OIDC_AUDIENCE_PLAN }}
+
+      - name: Resolve auth details for Terraform
+        id: jf
+        run: |
+          set -euo pipefail
+          token="${{ steps.jfrog-cli.outputs.oidc-token }}"
+          if [ -z "$token" ]; then
+            echo "::error::OIDC token was not produced by setup-jfrog-cli — check vars.OIDC_PROVIDER_NAME and JFrog identity mapping."
+            exit 1
+          fi
+          echo "::add-mask::$token"
+          payload=$(printf '%s' "$token" | cut -d. -f2 | tr '_-' '/+')
+          pad=$(( 4 - ${#payload} % 4 )); [ $pad -lt 4 ] && payload="${payload}$(printf '=%.0s' $(seq 1 $pad))"
+          subject=$(printf '%s' "$payload" | base64 -d 2>/dev/null | jq -r '.sub')
+          username="${subject##*/}"
+          echo "username=$username" >> "$GITHUB_OUTPUT"
+          {
+            echo "access_token<<EOF"
+            echo "$token"
+            echo "EOF"
+          } >> "$GITHUB_OUTPUT"
 
       - name: Terraform plan -refresh-only
         id: tfplan
         env:
           TF_HTTP_USERNAME: ${{ steps.jf.outputs.username }}
           TF_HTTP_PASSWORD: ${{ steps.jf.outputs.access_token }}
-          TF_VAR_jfrog_url: ${{ env.JFROG_URL }}
+          TF_VAR_jfrog_url: ${{ vars.JF_URL }}
           TF_VAR_jfrog_access_token: ${{ steps.jf.outputs.access_token }}
         working-directory: terraform/${{ matrix.layer }}
         run: |
@@ -84,7 +84,6 @@ jobs:
             echo "drift=$( [ $ec -eq 2 ] && echo true || echo false )"
             echo "errored=$( [ $ec -eq 1 ] && echo true || echo false )"
           } >> "$GITHUB_OUTPUT"
-          # don't fail the step on drift — we want to report it
           if [ $ec -eq 1 ]; then exit 1; fi
           exit 0
 
@@ -130,7 +129,6 @@ jobs:
               '</details>',
             ].join('\n');
 
-            // Look for an open drift issue for this same layer; update instead of duplicating.
             const search = await github.rest.search.issuesAndPullRequests({
               q: `repo:${context.repo.owner}/${context.repo.repo} is:issue is:open in:title "[drift] ${process.env.LAYER}"`,
             });

@@ -1,55 +1,70 @@
 # CI / OIDC setup
 
-One-time setup so GitHub Actions can plan/apply against JFrog without a
-long-lived token in repo secrets. Identity is established via OIDC token
-exchange: GitHub mints a short-lived JWT, JFrog accepts it (because we tell
-JFrog to trust this specific repository), and JFrog hands back a short-lived
-JFrog access token scoped to one of two service users.
+GitHub Actions authenticates to JFrog via OIDC token exchange — no long-lived
+JFrog token in repo secrets. Identity flows like this:
 
-Total time: **~15 minutes**, all in the JFrog UI and GitHub Settings UI.
+```
+   GitHub Actions                 jfrog/setup-jfrog-cli@v4               JFrog Platform
+   ──────────────                 ────────────────────────              ─────────────────
+   workflow runs   ──── mint ───▶ GitHub OIDC JWT ──── exchange ──────▶ Access service
+                                  (audience claim)                       validates issuer
+                                                                          + claim mapping
+                                                                  ◀──── short-lived JFrog
+                                                                        access token
+                                                                        (bound to mapped
+                                                                         JFrog user)
+```
+
+Two identity mappings under one OIDC integration distinguish plan from apply:
+
+| Workflow         | Audience claim          | JFrog user                                                              |
+|------------------|-------------------------|-------------------------------------------------------------------------|
+| `pr-validate`    | `jfrog-tf-state-plan`   | `gh-actions-plan` (read-only + write on `terraform-state-local`)        |
+| `drift`          | `jfrog-tf-state-plan`   | (same as above)                                                         |
+| `apply`          | `jfrog-tf-state-apply`  | `gh-actions-apply` (admin + write on `terraform-state-local`)           |
+
+Total setup time: ~15 minutes, all in JFrog UI + GitHub Settings UI.
 
 ---
 
 ## 1. Create two JFrog users for CI
 
-These users back the OIDC mappings. They never log in interactively — they
-exist solely so workflows have something to assume.
+JFrog UI → **Administration → Identity & Access → Users → + New User** for each:
 
-| User                | Purpose                       | Permissions                                                    |
-|---------------------|-------------------------------|----------------------------------------------------------------|
-| `gh-actions-plan`   | PR validate, drift detection  | Read-only across the platform; **write to `terraform-state-local`** (state lock requires writes even for plan) |
-| `gh-actions-apply`  | Apply on merge                | Admin scope (creates/edits projects, repos, groups, environments) + write to `terraform-state-local` |
+| User                | Purpose                       | Permissions                                                                |
+|---------------------|-------------------------------|----------------------------------------------------------------------------|
+| `gh-actions-plan`   | PR validate, drift detection  | Read on all repos + write on `terraform-state-local` (locking + state read) |
+| `gh-actions-apply`  | Apply on merge                | Admin scope + write on `terraform-state-local`                              |
 
-**Create them:**
-JFrog UI → Administration → Identity & Access → Users → **+ New User** for each.
-- Mark *Disable internal password* (no human use).
+- Mark both as *Disable internal password* (no human use).
 - Leave email blank.
 
-**Permissions for `gh-actions-plan`:**
-- Administration → Identity & Access → Permissions → **+ New Permission**
-- Name: `gh-actions-plan-perms`
-- Resources: All repositories (read-only) + `terraform-state-local` (write)
+### Permissions
+
+For `gh-actions-plan`:
+- **Administration → Identity & Access → Permissions → + New Permission**
+- Repositories tab: all repos with **Read** action; `terraform-state-local` with **Write** action
 - Assign to user `gh-actions-plan`
 
-**Permissions for `gh-actions-apply`:**
-- Easiest: assign the built-in **Admin** group to this user.
-- Tighter: a custom permission with project-create, project-update,
-  repository-create, repository-update, repository-delete, group-create,
-  group-update, environment-create across the whole platform.
+For `gh-actions-apply`:
+- Easiest: assign the built-in **Admin** group to this user
+- Tighter alternative: a custom permission with project-create/update,
+  repository-create/update/delete, group-create/update, environment-create
+  across all repos, plus write on `terraform-state-local`
 
 ---
 
-## 2. Configure GitHub as an OIDC provider in JFrog
+## 2. Create the OIDC Integration in JFrog
 
-JFrog UI → Administration → Identity & Access → **OIDC Integrations** → **+ New Integration**.
+JFrog UI → **Administration → Identity & Access → OIDC Integrations → + New Integration**.
 
-| Field           | Value                                                                                              |
-|-----------------|----------------------------------------------------------------------------------------------------|
-| Name            | `github`                                                                                           |
-| Description     | OIDC trust for the jfrog-platform-onboarding-tf repo's GitHub Actions                              |
-| Provider Type   | Generic OpenID Connect                                                                              |
-| Issuer URL      | `https://token.actions.githubusercontent.com`                                                       |
-| Audience        | (leave blank here — set per identity mapping below)                                                 |
+| Field             | Value                                                                                                 |
+|-------------------|--------------------------------------------------------------------------------------------------------|
+| Name              | `github-tf-onboarding` *(this is what you'll set as `vars.OIDC_PROVIDER_NAME` in GitHub)*              |
+| Description       | OIDC trust for the jfrog-platform-onboarding-tf repo's GitHub Actions                                  |
+| Provider Type     | Generic OpenID Connect                                                                                  |
+| Issuer URL        | `https://token.actions.githubusercontent.com`                                                            |
+| Audience          | (leave blank here — set per identity mapping below)                                                      |
 
 Save.
 
@@ -57,75 +72,102 @@ Save.
 
 ## 3. Add two identity mappings
 
-Each mapping says: *if a GitHub OIDC token with these claims arrives, mint a
-JFrog token for this user.*
+Under the `github-tf-onboarding` integration → **Identity Mappings → +**.
 
-**Mapping A — plan identity:**
-JFrog UI → OIDC Integration `github` → **Identity Mappings** → **+**
+### Mapping A — plan identity
 
-| Field      | Value                                                                                                       |
-|------------|-------------------------------------------------------------------------------------------------------------|
-| Name       | `github-plan`                                                                                                |
-| Priority   | 100                                                                                                          |
-| Claims     | `{ "iss": "https://token.actions.githubusercontent.com", "repository": "MCodeVisionary/jfrog-platform-onboarding-tf", "aud": "jfrog-tf-state-plan" }` |
-| Token User | `gh-actions-plan`                                                                                            |
-| Token Scope| `applied-permissions/user`                                                                                   |
-| Token TTL  | 600 (10 minutes)                                                                                             |
+| Field        | Value                                                                                                                        |
+|--------------|------------------------------------------------------------------------------------------------------------------------------|
+| Name         | `github-plan`                                                                                                                  |
+| Priority     | 100                                                                                                                            |
+| Claims (JSON)| `{ "iss": "https://token.actions.githubusercontent.com", "repository": "MCodeVisionary/jfrog-platform-onboarding-tf", "aud": "jfrog-tf-state-plan" }` |
+| Token User   | `gh-actions-plan`                                                                                                              |
+| Token Scope  | `applied-permissions/user`                                                                                                     |
+| Token TTL    | 600 (10 minutes)                                                                                                               |
 
-**Mapping B — apply identity:**
+### Mapping B — apply identity
 
-| Field      | Value                                                                                                        |
-|------------|--------------------------------------------------------------------------------------------------------------|
-| Name       | `github-apply`                                                                                                 |
-| Priority   | 100                                                                                                            |
-| Claims     | `{ "iss": "https://token.actions.githubusercontent.com", "repository": "MCodeVisionary/jfrog-platform-onboarding-tf", "ref": "refs/heads/main", "aud": "jfrog-tf-state-apply" }` |
-| Token User | `gh-actions-apply`                                                                                             |
-| Token Scope| `applied-permissions/user`                                                                                     |
-| Token TTL  | 1800 (30 minutes)                                                                                              |
+| Field        | Value                                                                                                                                                                  |
+|--------------|------------------------------------------------------------------------------------------------------------------------------------------------------------------------|
+| Name         | `github-apply`                                                                                                                                                           |
+| Priority     | 100                                                                                                                                                                      |
+| Claims (JSON)| `{ "iss": "https://token.actions.githubusercontent.com", "repository": "MCodeVisionary/jfrog-platform-onboarding-tf", "ref": "refs/heads/main", "aud": "jfrog-tf-state-apply" }` |
+| Token User   | `gh-actions-apply`                                                                                                                                                       |
+| Token Scope  | `applied-permissions/user`                                                                                                                                               |
+| Token TTL    | 1800 (30 minutes)                                                                                                                                                        |
 
 The `ref` claim on Mapping B restricts apply privileges to runs on `main`. PR
-runs (which use audience `jfrog-tf-state-plan`) cannot impersonate the apply
-user even if compromised.
+runs (which request audience `jfrog-tf-state-plan`) cannot impersonate the
+apply user even if compromised.
 
 ---
 
-## 4. Repository settings on GitHub
+## 4. Set GitHub repo variables
 
-GitHub UI → Settings (repo) → **Actions** → **General** →
-- Workflow permissions: **Read and write permissions** (needed for posting PR comments and creating drift Issues)
-- Allow GitHub Actions to create and approve pull requests: **enabled**
+GitHub UI → **Settings → Secrets and variables → Actions → Variables tab → New repository variable**.
 
-GitHub UI → Settings (repo) → **Branches** → branch protection rule for `main`:
+Create **four** variables (no secrets needed — these are non-sensitive identifiers):
+
+| Variable name            | Value                                                  |
+|--------------------------|--------------------------------------------------------|
+| `JF_URL`                 | `https://mcodevisionaryorg.jfrog.io` (no trailing slash) |
+| `OIDC_PROVIDER_NAME`     | `github-tf-onboarding` *(must match step 2)*           |
+| `OIDC_AUDIENCE_PLAN`     | `jfrog-tf-state-plan` *(must match Mapping A)*         |
+| `OIDC_AUDIENCE_APPLY`    | `jfrog-tf-state-apply` *(must match Mapping B)*        |
+
+That's it — **no JFrog token stored anywhere**.
+
+---
+
+## 5. GitHub repo settings
+
+### Workflow permissions
+GitHub UI → **Settings → Actions → General → Workflow permissions**:
+- **Read and write permissions** (workflows post PR comments and create drift Issues)
+- **Allow GitHub Actions to create and approve pull requests:** enabled
+
+### Branch protection for `main`
+GitHub UI → **Settings → Branches → Branch protection rules → Add rule**:
+- Branch name pattern: `main`
 - Require a pull request before merging: ✓
 - Require approvals: 1
 - Require review from Code Owners: ✓
-- Require status checks to pass before merging: ✓ (check **PR Validate / plan**)
+- Require status checks to pass before merging: ✓ — add **PR Validate / plan**
 - Do not allow bypassing the above settings: ✓
 
-GitHub UI → Settings (org) → **Teams** → create:
+### Teams (CODEOWNERS uses these)
+GitHub UI → org-level **Teams → New team** for each:
 - `platform-admins`
-- `cmrc-team`, `vntg-team`, `wlt-team`
-Then edit `.github/CODEOWNERS` to replace placeholder team names if you used different ones.
+- `cmrc-team`, `vntg-team`, `wlt-team` *(or whatever team names match your projects)*
+
+If your team names differ, edit `.github/CODEOWNERS` to match.
 
 ---
 
-## 5. Test the OIDC trust
+## 6. Test the setup
 
-After the above is configured:
+After steps 1–5 are done:
 
-1. Open a trivial PR — e.g. add a comment to `terraform/projects/cmrc/repos.json`.
-2. Wait for **PR Validate** to run.
+1. Open a trivial PR — e.g. tweak a comment in `terraform/projects/cmrc/repos.json`.
+2. Wait for **PR Validate / plan** to run (~2–3 min).
 3. If you see a red-bold drift banner with a plan posted as a PR comment, OIDC is working.
-4. If you see `OIDC exchange failed` in the workflow log, check:
-   - The `repository` claim in the JFrog mapping exactly matches `<org>/<repo>` (case-sensitive)
-   - The audience strings match (`jfrog-tf-state-plan` vs `jfrog-tf-state-apply`)
-   - The OIDC Integration name in JFrog matches what the workflow passes (`provider_name: 'github'`)
+
+### Troubleshooting
+
+| Symptom                                                              | Cause                                                          | Fix                                                                                                       |
+|----------------------------------------------------------------------|----------------------------------------------------------------|-----------------------------------------------------------------------------------------------------------|
+| Workflow fails with `OIDC token was not produced by setup-jfrog-cli` | `vars.OIDC_PROVIDER_NAME` doesn't match JFrog Integration name | Verify the OIDC Integration in JFrog UI; copy its name exactly into the GitHub repo variable              |
+| Workflow fails with `403` from JFrog                                 | Identity mapping claim mismatch                                | The `repository` claim in your mapping must be exactly `<org>/<repo>` (case-sensitive); verify both sides |
+| Workflow fails with `audience mismatch`                              | `vars.OIDC_AUDIENCE_PLAN` / `_APPLY` doesn't match a mapping  | Check the `aud` claim on the corresponding mapping in JFrog                                               |
+| State backend errors with `endpoint requires auth`                   | OIDC succeeded but token's subject doesn't have access         | Add `gh-actions-plan` / `gh-actions-apply` write permission on the `terraform-state-local` repo            |
+| PR validate runs but no comment posts                                | `pull-requests: write` permission missing                      | Repo Settings → Actions → Workflow permissions → enable Read and write                                    |
 
 ---
 
-## 6. Key things to know
+## 7. Key properties of this setup
 
-- **No GitHub Secrets needed for JFrog auth.** No `JFROG_ACCESS_TOKEN` secret. The only thing GitHub stores about JFrog is the URL, which is hardcoded in workflow `env:` blocks — not a secret.
-- **Rotation: automatic.** The JFrog tokens minted live 10–30 minutes. Workflow re-mints on every run.
-- **Revoking access.** Delete or disable `gh-actions-plan` / `gh-actions-apply` in JFrog and every workflow run instantly fails. There's no token to invalidate.
-- **State backend (`terraform-state-local`) needs write access from both identities** because `terraform init` and `terraform plan` both touch the lock file. The plan user only needs `LOCK`/`UNLOCK`/`GET` on the state path, not on real repos.
+- **No JFrog access tokens stored in GitHub Secrets.** The only GitHub-stored values are the JFrog URL, the OIDC provider name, and the two audience strings — none are sensitive.
+- **Automatic rotation.** Workflow runs mint a fresh JFrog token each time, valid for 10 min (plan) / 30 min (apply). Expires before it can be misused.
+- **One-step revocation.** Disable `gh-actions-plan` or `gh-actions-apply` in the JFrog UI and every workflow run instantly fails. There's no token to invalidate.
+- **Audit trail.** JFrog logs every token-issue event with the GitHub claim payload, so you can trace exactly which PR/commit triggered which JFrog mutation.
+- **Apply privileges are pinned to `main`.** Even if a PR's workflow is compromised, it cannot acquire the `apply` audience — that's gated by the `ref=refs/heads/main` claim on Mapping B.

@@ -13,10 +13,9 @@ concurrency:
 permissions:
   contents: read
   pull-requests: write   # post post-apply comment on the merged PR
-  id-token: write
+  id-token: write        # for OIDC token
 
 env:
-  JFROG_URL: https://mcodevisionaryorg.jfrog.io
   TF_IN_AUTOMATION: "true"
   TF_INPUT: "false"
 
@@ -34,7 +33,6 @@ jobs:
         name: Detect affected Terraform layers
         run: |
           set -euo pipefail
-          # Diff the push range (before..after); use HEAD~1..HEAD if no `before`
           before="${{ github.event.before }}"
           after="${{ github.event.after }}"
           if [ -z "$before" ] || [ "$before" = "0000000000000000000000000000000000000000" ]; then
@@ -55,9 +53,6 @@ jobs:
             fi
           done
 
-          # Note: module/ changes alone do not trigger applies — bump a consumer's
-          # ref= to roll out a new module version.
-
           if [ ${#layers[@]} -eq 0 ]; then
             echo "layers=[]" >> "$GITHUB_OUTPUT"
             exit 0
@@ -68,8 +63,6 @@ jobs:
       - id: pr
         name: Find the merged PR number
         run: |
-          # The push event after a merge contains the merge commit; use GitHub API
-          # to find the PR associated with this commit.
           pr=$(gh pr list --search "${{ github.sha }}" --state merged --json number --jq '.[0].number' 2>/dev/null || echo "")
           echo "number=$pr" >> "$GITHUB_OUTPUT"
         env:
@@ -81,7 +74,7 @@ jobs:
     runs-on: ubuntu-latest
     strategy:
       fail-fast: false
-      max-parallel: 5    # cap concurrent applies to avoid JFrog rate limits
+      max-parallel: 5
       matrix:
         layer: ${{ fromJSON(needs.detect-layers.outputs.layers) }}
     steps:
@@ -92,41 +85,42 @@ jobs:
           terraform_version: "1.6.0"
           terraform_wrapper: false
 
-      - name: Exchange GitHub OIDC for JFrog token (apply scope)
-        id: jf
-        uses: actions/github-script@v7
+      - name: Setup JFrog CLI (OIDC, apply scope)
+        uses: jfrog/setup-jfrog-cli@v4
+        id: jfrog-cli
         env:
-          JFROG_URL: ${{ env.JFROG_URL }}
+          JF_URL: ${{ vars.JF_URL }}
         with:
-          script: |
-            const oidc = await core.getIDToken('jfrog-tf-state-apply');
-            const fetch = (await import('node-fetch')).default;
-            const res = await fetch(`${process.env.JFROG_URL}/access/api/v1/oidc/token`, {
-              method: 'POST',
-              headers: { 'Content-Type': 'application/json' },
-              body: JSON.stringify({
-                subject_token: oidc,
-                subject_token_type: 'urn:ietf:params:oauth:token-type:id_token',
-                provider_name: 'github',
-              })
-            });
-            const body = await res.json();
-            if (!body.access_token) {
-              core.setFailed(`OIDC exchange failed: ${JSON.stringify(body)}`);
-              return;
-            }
-            core.setSecret(body.access_token);
-            const payload = JSON.parse(Buffer.from(body.access_token.split('.')[1], 'base64').toString());
-            const username = (payload.sub || '').split('/').pop();
-            core.setOutput('access_token', body.access_token);
-            core.setOutput('username', username);
+          oidc-provider-name: ${{ vars.OIDC_PROVIDER_NAME }}
+          oidc-audience: ${{ vars.OIDC_AUDIENCE_APPLY }}
+
+      - name: Resolve auth details for Terraform
+        id: jf
+        run: |
+          set -euo pipefail
+          token="${{ steps.jfrog-cli.outputs.oidc-token }}"
+          if [ -z "$token" ]; then
+            echo "::error::OIDC token was not produced by setup-jfrog-cli — check vars.OIDC_PROVIDER_NAME and JFrog identity mapping."
+            exit 1
+          fi
+          echo "::add-mask::$token"
+          payload=$(printf '%s' "$token" | cut -d. -f2 | tr '_-' '/+')
+          pad=$(( 4 - ${#payload} % 4 )); [ $pad -lt 4 ] && payload="${payload}$(printf '=%.0s' $(seq 1 $pad))"
+          subject=$(printf '%s' "$payload" | base64 -d 2>/dev/null | jq -r '.sub')
+          username="${subject##*/}"
+          echo "username=$username" >> "$GITHUB_OUTPUT"
+          {
+            echo "access_token<<EOF"
+            echo "$token"
+            echo "EOF"
+          } >> "$GITHUB_OUTPUT"
 
       - name: Terraform apply
         id: tfapply
         env:
           TF_HTTP_USERNAME: ${{ steps.jf.outputs.username }}
           TF_HTTP_PASSWORD: ${{ steps.jf.outputs.access_token }}
-          TF_VAR_jfrog_url: ${{ env.JFROG_URL }}
+          TF_VAR_jfrog_url: ${{ vars.JF_URL }}
           TF_VAR_jfrog_access_token: ${{ steps.jf.outputs.access_token }}
         working-directory: terraform/${{ matrix.layer }}
         run: |
@@ -137,7 +131,6 @@ jobs:
           ec=${PIPESTATUS[0]}
           set -e
 
-          # Parse "Apply complete! Resources: N added, M changed, K destroyed."
           summary=$(grep -E '^Apply complete!' apply.out | tail -1 || echo "")
           add=$(echo "$summary"     | sed -nE 's/.*Resources: ([0-9]+) added.*/\1/p');     add=${add:-0}
           change=$(echo "$summary"  | sed -nE 's/.*added, ([0-9]+) changed.*/\1/p');       change=${change:-0}
@@ -156,13 +149,13 @@ jobs:
         if: always() && needs.detect-layers.outputs.pr_number != ''
         uses: actions/github-script@v7
         env:
-          LAYER:    ${{ matrix.layer }}
-          STATUS:   ${{ steps.tfapply.outputs.status }}
-          ADD:      ${{ steps.tfapply.outputs.add }}
-          CHANGE:   ${{ steps.tfapply.outputs.change }}
-          DESTROY:  ${{ steps.tfapply.outputs.destroy }}
-          SHA:      ${{ github.sha }}
-          PR:       ${{ needs.detect-layers.outputs.pr_number }}
+          LAYER:   ${{ matrix.layer }}
+          STATUS:  ${{ steps.tfapply.outputs.status }}
+          ADD:     ${{ steps.tfapply.outputs.add }}
+          CHANGE:  ${{ steps.tfapply.outputs.change }}
+          DESTROY: ${{ steps.tfapply.outputs.destroy }}
+          SHA:     ${{ github.sha }}
+          PR:      ${{ needs.detect-layers.outputs.pr_number }}
         with:
           script: |
             const fs = require('fs');

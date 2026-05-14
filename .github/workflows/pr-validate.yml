@@ -5,7 +5,6 @@ on:
     paths:
       - 'terraform/**'
 
-# Cancel in-flight runs when a new commit is pushed to the same PR
 concurrency:
   group: pr-validate-${{ github.event.pull_request.number }}
   cancel-in-progress: true
@@ -13,10 +12,9 @@ concurrency:
 permissions:
   contents: read
   pull-requests: write   # post plan comment
-  id-token: write        # OIDC
+  id-token: write        # for OIDC token
 
 env:
-  JFROG_URL: https://mcodevisionaryorg.jfrog.io
   TF_IN_AUTOMATION: "true"
   TF_INPUT: "false"
 
@@ -50,8 +48,8 @@ jobs:
             fi
           done
 
-          # Module changes alone don't trigger applies (modules are pinned by tag)
-          # but they DO trigger PR validation on every layer to verify nothing breaks.
+          # Module changes alone don't trigger applies (modules are pinned by tag),
+          # but they trigger validation on every layer to verify nothing breaks.
           if echo "$changed" | grep -q '^terraform/modules/'; then
             layers=("platform" "projects/cmrc" "projects/vntg" "projects/wlt")
           fi
@@ -82,42 +80,46 @@ jobs:
           terraform_version: "1.6.0"
           terraform_wrapper: false
 
-      - name: Exchange GitHub OIDC for JFrog token (plan scope)
-        id: jf
-        uses: actions/github-script@v7
+      - name: Setup JFrog CLI (OIDC, plan scope)
+        uses: jfrog/setup-jfrog-cli@v4
+        id: jfrog-cli
         env:
-          JFROG_URL: ${{ env.JFROG_URL }}
+          JF_URL: ${{ vars.JF_URL }}
         with:
-          script: |
-            const oidc = await core.getIDToken('jfrog-tf-state-plan');
-            const fetch = (await import('node-fetch')).default;
-            const res = await fetch(`${process.env.JFROG_URL}/access/api/v1/oidc/token`, {
-              method: 'POST',
-              headers: { 'Content-Type': 'application/json' },
-              body: JSON.stringify({
-                subject_token: oidc,
-                subject_token_type: 'urn:ietf:params:oauth:token-type:id_token',
-                provider_name: 'github',
-              })
-            });
-            const body = await res.json();
-            if (!body.access_token) {
-              core.setFailed(`OIDC exchange failed: ${JSON.stringify(body)}`);
-              return;
-            }
-            core.setSecret(body.access_token);
-            // Decode sub claim for username
-            const payload = JSON.parse(Buffer.from(body.access_token.split('.')[1], 'base64').toString());
-            const username = (payload.sub || '').split('/').pop();
-            core.setOutput('access_token', body.access_token);
-            core.setOutput('username', username);
+          oidc-provider-name: ${{ vars.OIDC_PROVIDER_NAME }}
+          oidc-audience: ${{ vars.OIDC_AUDIENCE_PLAN }}
+
+      - name: Resolve auth details for Terraform
+        id: jf
+        run: |
+          set -euo pipefail
+          token="${{ steps.jfrog-cli.outputs.oidc-token }}"
+          if [ -z "$token" ]; then
+            echo "::error::OIDC token was not produced by setup-jfrog-cli — check vars.OIDC_PROVIDER_NAME and JFrog identity mapping."
+            exit 1
+          fi
+          # Mask before any further usage
+          echo "::add-mask::$token"
+          # Decode the JWT payload to extract the subject (the JFrog username)
+          payload=$(printf '%s' "$token" | cut -d. -f2 | tr '_-' '/+')
+          # pad base64 to a multiple of 4
+          pad=$(( 4 - ${#payload} % 4 )); [ $pad -lt 4 ] && payload="${payload}$(printf '=%.0s' $(seq 1 $pad))"
+          subject=$(printf '%s' "$payload" | base64 -d 2>/dev/null | jq -r '.sub')
+          username="${subject##*/}"
+          echo "username=$username" >> "$GITHUB_OUTPUT"
+          # Don't print the token itself — masking applied
+          {
+            echo "access_token<<EOF"
+            echo "$token"
+            echo "EOF"
+          } >> "$GITHUB_OUTPUT"
 
       - name: Terraform init + plan
         id: tfplan
         env:
           TF_HTTP_USERNAME: ${{ steps.jf.outputs.username }}
           TF_HTTP_PASSWORD: ${{ steps.jf.outputs.access_token }}
-          TF_VAR_jfrog_url: ${{ env.JFROG_URL }}
+          TF_VAR_jfrog_url: ${{ vars.JF_URL }}
           TF_VAR_jfrog_access_token: ${{ steps.jf.outputs.access_token }}
         working-directory: terraform/${{ matrix.layer }}
         run: |
@@ -129,29 +131,30 @@ jobs:
           set -e
           terraform show -no-color tfplan > plan.txt 2>/dev/null || cp plan.out plan.txt
 
-          # Extract resource counts from plan summary
           summary=$(grep -E '^Plan: ' plan.out | tail -1 || echo "Plan: 0 to add, 0 to change, 0 to destroy.")
           add=$(echo "$summary"     | sed -nE 's/.*Plan: ([0-9]+) to add.*/\1/p');     add=${add:-0}
           change=$(echo "$summary"  | sed -nE 's/.*([0-9]+) to change.*/\1/p');         change=${change:-0}
           destroy=$(echo "$summary" | sed -nE 's/.*([0-9]+) to destroy.*/\1/p');        destroy=${destroy:-0}
 
-          echo "add=$add"         >> "$GITHUB_OUTPUT"
-          echo "change=$change"   >> "$GITHUB_OUTPUT"
-          echo "destroy=$destroy" >> "$GITHUB_OUTPUT"
-          echo "summary=$summary" >> "$GITHUB_OUTPUT"
-          echo "exit_code=$ec"    >> "$GITHUB_OUTPUT"
+          {
+            echo "add=$add"
+            echo "change=$change"
+            echo "destroy=$destroy"
+            echo "summary=$summary"
+            echo "exit_code=$ec"
+          } >> "$GITHUB_OUTPUT"
           exit $ec
 
       - name: Post plan as PR comment (red-bold drift banner)
         if: always()
         uses: actions/github-script@v7
         env:
-          LAYER:     ${{ matrix.layer }}
-          ADD:       ${{ steps.tfplan.outputs.add }}
-          CHANGE:    ${{ steps.tfplan.outputs.change }}
-          DESTROY:   ${{ steps.tfplan.outputs.destroy }}
-          SUMMARY:   ${{ steps.tfplan.outputs.summary }}
-          EXIT:      ${{ steps.tfplan.outputs.exit_code }}
+          LAYER:    ${{ matrix.layer }}
+          ADD:      ${{ steps.tfplan.outputs.add }}
+          CHANGE:   ${{ steps.tfplan.outputs.change }}
+          DESTROY:  ${{ steps.tfplan.outputs.destroy }}
+          SUMMARY:  ${{ steps.tfplan.outputs.summary }}
+          EXIT:     ${{ steps.tfplan.outputs.exit_code }}
         with:
           script: |
             const fs = require('fs');
@@ -159,7 +162,6 @@ jobs:
             let plan = '';
             try { plan = fs.readFileSync(path, 'utf8'); } catch (e) { plan = '(plan output unavailable)'; }
 
-            // GitHub PR comment limit ~65k chars — truncate
             const MAX = 50000;
             if (plan.length > MAX) plan = plan.slice(0, MAX) + '\n\n... (truncated) ...';
 
@@ -186,7 +188,6 @@ jobs:
               '</details>',
             ].join('\n');
 
-            // Find existing comment for this layer and update; otherwise create new.
             const marker = `<!-- pr-validate:${process.env.LAYER} -->`;
             const comments = await github.rest.issues.listComments({
               owner: context.repo.owner,
