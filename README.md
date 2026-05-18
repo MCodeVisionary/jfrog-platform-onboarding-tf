@@ -173,15 +173,16 @@ See [docs/CI_OIDC_SETUP.md](docs/CI_OIDC_SETUP.md) for the step-by-step (creatin
 
 ## Xray Curation Policies
 
-Curation policies block packages at download time when they hit one of the conditions JFrog defines (CVE severity, malicious package, license, package age, etc.). They are platform-wide and managed by the platform layer alongside projects/groups/stages.
+Curation policies block packages at download time when they hit one of the conditions JFrog defines (CVE severity, malicious package, license, package age, etc.). They are platform-wide but **live in their own Terraform layer** (`terraform/curation/`) with their own state file — separate from the platform layer — because they use a different JFrog provider (`jfrog/xray`) and a different permission scope (Xray Admin).
 
 ### Where they live
 
 | File | Purpose |
 |---|---|
-| [`terraform/platform/curation_policies.json`](terraform/platform/curation_policies.json) | The data file — one entry per policy. Edit this to add, remove, or modify policies. |
-| [`terraform/modules/platform/curation.tf`](terraform/modules/platform/curation.tf) | The Terraform resource block (`xray_curation_policy.this`) iterating the JSON. |
-| [`terraform/modules/platform/locals.tf`](terraform/modules/platform/locals.tf) | JSON parser that strips documentation-only `_comment` / `_condition` fields. |
+| [`terraform/curation/curation_policies.json`](terraform/curation/curation_policies.json) | The data file — one entry per policy. Edit this to add, remove, or modify policies. |
+| [`terraform/curation/`](terraform/curation/) | Root config: `main.tf` (calls `curation/v1.0.0` module), `providers.tf` (xray), `variables.tf`, `versions.tf`, `outputs.tf`, `backend.tf` (remote state at `terraform-state-local/curation/`). |
+| [`terraform/modules/curation/curation.tf`](terraform/modules/curation/curation.tf) | The `xray_curation_policy.this` resource block iterating the JSON. |
+| [`terraform/modules/curation/locals.tf`](terraform/modules/curation/locals.tf) | JSON parser that strips documentation-only `_comment` / `_condition` fields. |
 
 ### Default policies shipped (17)
 
@@ -211,7 +212,7 @@ All policies share the same shape: `scope = all_repos`, `policy_action = block`,
 
 1. Pick the JFrog-side condition ID you want to enforce. The full catalog lives at JFrog UI → Administration → Curation → Conditions. Predefined conditions cover CVE bands, license bans, age, immaturity, Docker Hub officiality, and more.
 
-2. Add an entry to `terraform/platform/curation_policies.json`:
+2. Add an entry to `terraform/curation/curation_policies.json`:
 
    ```json
    {
@@ -227,9 +228,26 @@ All policies share the same shape: `scope = all_repos`, `policy_action = block`,
 
 Delete its entry from `curation_policies.json`, open a PR. Terraform plan shows `-1` for `xray_curation_policy.this["..."]`. After merge, the policy is removed from JFrog Curation. No state surgery required.
 
-### Provider requirement
+### Apply / destroy order
 
-The platform module v1.2.0+ requires the [`jfrog/xray ~> 3.0`](https://registry.terraform.io/providers/jfrog/xray/latest) provider, automatically installed during `terraform init`. The `gh-actions-apply` OIDC user used by CI needs **Xray Admin** scope — without it, apply fails with HTTP 403 when creating/updating curation policies. See [docs/CI_OIDC_SETUP.md](docs/CI_OIDC_SETUP.md) §1 for the permission setup.
+The curation layer is wired into the same orchestration scripts as the platform and project layers:
+
+- `./run.sh` applies: **platform** → **curation** → **projects/* in parallel**
+- `./cleanup.sh` destroys in reverse: **projects/* in parallel** → **curation** → **platform**
+
+You can also operate on the curation layer in isolation:
+
+```bash
+# Apply only curation (assumes platform layer already exists)
+cd terraform/curation && terraform init && terraform apply
+
+# Destroy only curation
+cd terraform/curation && terraform destroy
+```
+
+### Provider + permissions
+
+The curation layer uses the [`jfrog/xray ~> 3.0`](https://registry.terraform.io/providers/jfrog/xray/latest) provider, isolated from the other JFrog providers (`artifactory`, `project`, `platform`) used by the platform layer. The `gh-actions-apply` OIDC user used by CI needs **Xray Admin** scope — without it, apply fails with HTTP 403. See [docs/CI_OIDC_SETUP.md](docs/CI_OIDC_SETUP.md) §1 for the permission setup.
 
 ---
 

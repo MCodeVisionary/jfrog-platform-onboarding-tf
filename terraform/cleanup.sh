@@ -328,15 +328,32 @@ for pid in "${pids[@]}"; do
 done
 
 if [ $phase1_fail -gt 0 ]; then
-  error "$phase1_fail project layer(s) failed. Not proceeding to platform destroy."
+  error "$phase1_fail project layer(s) failed. Not proceeding to curation/platform destroy."
   error "Resolve project-layer failures and re-run cleanup."
   exit 1
 fi
 success "Phase 1 complete."
 
-# ── Phase 2: platform layer ───────────────────────────────────────────────
+# ── Phase 2: curation layer ───────────────────────────────────────────────
+# Curation has no dependency on platform resources, but we destroy it BEFORE
+# the platform layer so the Xray provider talks to a still-warm control
+# plane. Destroying curation last (after platform projects/groups are
+# already gone) hasn't shown problems on JFrog SaaS but the ordering is
+# kept conservative.
+if [ -d "curation" ]; then
+  step "Phase 2: Destroying curation layer"
+  if layer_has_state "curation"; then
+    ensure_init "curation"
+    (cd curation && destroy_with_retry "curation")
+    success "Curation layer destroyed."
+  else
+    info "  Curation layer has no state — skipping."
+  fi
+fi
+
+# ── Phase 3: platform layer ───────────────────────────────────────────────
 destroy_platform_layer
-success "Phase 2 complete."
+success "Phase 3 complete."
 
 # ── Verification ──────────────────────────────────────────────────────────
 step "Verifying JFrog state"
