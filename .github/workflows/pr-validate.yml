@@ -12,7 +12,6 @@ concurrency:
 permissions:
   contents: read
   pull-requests: write   # post plan comment
-  id-token: write        # for OIDC token
 
 env:
   TF_IN_AUTOMATION: "true"
@@ -83,46 +82,17 @@ jobs:
           terraform_version: "1.6.0"
           terraform_wrapper: false
 
-      - name: Setup JFrog CLI
-        uses: jfrog/setup-jfrog-cli@v4
-        id: jfrog-cli
-        env:
-          JF_URL: ${{ vars.JF_URL }}
-        with:
-          oidc-provider-name: MCodeVisionary/jfrog-platform-onboarding-tf@github
-
-      - name: Resolve auth details for Terraform
-        id: jf
-        run: |
-          set -euo pipefail
-          token="${{ steps.jfrog-cli.outputs.oidc-token }}"
-          if [ -z "$token" ]; then
-            echo "::error::OIDC token was not produced by setup-jfrog-cli — check the JFrog OIDC integration and identity mapping for MCodeVisionary/jfrog-platform-onboarding-tf@github."
-            exit 1
-          fi
-          # Mask before any further usage
-          echo "::add-mask::$token"
-          # Decode the JWT payload to extract the subject (the JFrog username)
-          payload=$(printf '%s' "$token" | cut -d. -f2 | tr '_-' '/+')
-          # pad base64 to a multiple of 4
-          pad=$(( 4 - ${#payload} % 4 )); [ $pad -lt 4 ] && payload="${payload}$(printf '=%.0s' $(seq 1 $pad))"
-          subject=$(printf '%s' "$payload" | base64 -d 2>/dev/null | jq -r '.sub')
-          username="${subject##*/}"
-          echo "username=$username" >> "$GITHUB_OUTPUT"
-          # Don't print the token itself — masking applied
-          {
-            echo "access_token<<EOF"
-            echo "$token"
-            echo "EOF"
-          } >> "$GITHUB_OUTPUT"
-
       - name: Terraform init + plan
         id: tfplan
         env:
-          TF_HTTP_USERNAME: ${{ steps.jf.outputs.username }}
-          TF_HTTP_PASSWORD: ${{ steps.jf.outputs.access_token }}
-          TF_VAR_jfrog_url: ${{ vars.JF_URL }}
-          TF_VAR_jfrog_access_token: ${{ steps.jf.outputs.access_token }}
+          # Static-auth flow (no OIDC). Username from a repo Variable, token
+          # from a repo Secret. The same secret feeds both consumers:
+          #   - TF_HTTP_PASSWORD          → HTTP state backend (basic-auth)
+          #   - TF_VAR_jfrog_access_token → var.jfrog_access_token (providers)
+          TF_HTTP_USERNAME:          ${{ vars.TF_HTTP_USERNAME }}
+          TF_HTTP_PASSWORD:          ${{ secrets.JFROG_ACCESS_TOKEN }}
+          TF_VAR_jfrog_url:          ${{ vars.JF_URL }}
+          TF_VAR_jfrog_access_token: ${{ secrets.JFROG_ACCESS_TOKEN }}
         working-directory: terraform/${{ matrix.layer }}
         run: |
           set -o pipefail
