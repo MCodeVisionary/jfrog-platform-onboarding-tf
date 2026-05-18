@@ -1,34 +1,117 @@
-# Terraform — state, plans, locks, providers, generated logs
+# =============================================================================
+# Terraform
+# =============================================================================
+
+# Provider plugins, lockfile cache, module cache
 **/.terraform/
+
+# State files and their backups
 **/terraform.tfstate
 **/terraform.tfstate.*
+**/terraform.tfstate.lock.info
+
+# Saved plans (binary and JSON)
 **/tfplan
-**/apply.log
-**/apply-checklist.log
+**/*.tfplan
+**/*.tfplan.json
+
+# Crash logs
 **/crash.log
 **/crash.*.log
+
+# CLI config that may carry credentials or local-only settings
 **/.terraformrc
 **/terraform.rc
 
-# Secrets — credentials must never be committed
+# Terragrunt cache (if anyone adopts terragrunt later)
+**/.terragrunt-cache/
+
+# Scanner caches (tfsec, tflint, checkov, etc.)
+**/.tfsec.cache
+**/.tflint.d/
+**/tflint.tfstate
+**/checkov/
+
+# .terraform.lock.hcl is intentionally NOT ignored — it pins provider versions
+# and must be committed in every root config.
+
+# =============================================================================
+# Run / apply artifacts produced by run.sh and cleanup.sh
+# =============================================================================
+**/apply.log
+**/apply-checklist.log
+**/plan.out
+**/plan.txt
+**/apply.out
+
+# =============================================================================
+# Secrets — never commit
+# =============================================================================
 **/terraform.tfvars
-**/*.auto.tfvars
 **/terraform.tfvars.bak
+**/*.auto.tfvars
+**/*.auto.tfvars.json
+
+# Anything that looks like an env file
 .env
 .env.*
+**/.envrc
 
-# Editor / OS noise
+# Generic credential / private-key patterns (defense in depth)
+**/*.pem
+**/*.key
+**/credentials
+**/credentials.json
+**/secrets.yaml
+**/secrets.yml
+
+# =============================================================================
+# OS noise
+# =============================================================================
 .DS_Store
+._*
+.Spotlight-V100
+.Trashes
+Thumbs.db
+desktop.ini
+
+# =============================================================================
+# Editor / IDE noise
+# =============================================================================
 .vscode/
 .idea/
+*.iml
 *.swp
 *.swo
+*.swn
+*~
+.\#*
+\#*\#
 
+# =============================================================================
+# Backup / merge-conflict residue
+# =============================================================================
+*.bak
+*.orig
+*.rej
+*.tmp
+
+# =============================================================================
+# Language tooling (only if anyone adds helper scripts to this repo)
+# =============================================================================
+node_modules/
+__pycache__/
+*.pyc
+.venv/
+venv/
+
+# =============================================================================
 # Claude Code working directory
+# =============================================================================
 .claude/
 
-# Legacy single-state layout (archived during the scale refactor)
+# =============================================================================
+# Legacy single-state layout (kept locally as historical reference,
+# but not part of the active codebase)
+# =============================================================================
 terraform/_legacy_flat_layout/
-
-# Lock files we DO want to commit (override the exclusion above):
-# .terraform.lock.hcl is intentionally NOT in .gitignore — it pins provider versions.
