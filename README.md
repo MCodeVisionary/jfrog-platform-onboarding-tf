@@ -68,16 +68,46 @@ The reusable modules under `modules/` are also versioned independently via git t
 
 ---
 
+## Fork & customize (only if you're using this for a different JFrog tenant)
+
+This repo ships as a **concrete, working example** tied to `mcodevisionaryorg.jfrog.io` and the projects `cmrc` / `vntg` / `wlt`. Easier to read than placeholders, and the file paths/structure are self-explanatory.
+
+If you fork for a different tenant, run this one-shot helper to swap the example host for yours:
+
+```bash
+./scripts/setup.sh <your-jfrog-host>
+
+# Examples:
+./scripts/setup.sh acme.jfrog.io
+./scripts/setup.sh jfrog.acme-internal.com
+./scripts/setup.sh acme.jfrog.io:8082
+```
+
+The script edits the 5 `terraform/<layer>/backend.tf` files plus the `.github/scripts/intake_new_project.py` template so new project scaffolds inherit your host. It's idempotent — safe to re-run; running with the same host is a no-op.
+
+Other edits a fork would typically also do (manual — script doesn't touch these):
+- `.github/CODEOWNERS` — team handles (`@MCodeVisionary/...` → `@<your-org>/...`)
+- The `source = "git::https://github.com/MCodeVisionary/..."` URLs in `terraform/{platform,curation,projects/*}/main.tf` — point them at your fork
+- `terraform/platform/projects.json` — your projects, not the demo cmrc/vntg/wlt set
+- `terraform/projects/<key>/repos.json` — your apps & package types
+- `terraform/curation/curation_policies.json` — keep, adjust, or drop the 17 default policies
+
+If you're just **reading the repo** (not deploying to a different tenant), skip this section — the example values are intentional.
+
+---
+
 ## Quick Start
+
+If you've forked for your own tenant, run `./scripts/setup.sh <your-jfrog-host>` first (see [Fork & customize](#fork--customize-only-if-youre-using-this-for-a-different-jfrog-tenant) above). Otherwise:
 
 ```bash
 # 1. Configure credentials
-cp terraform.tfvars.example terraform.tfvars
-# Edit terraform.tfvars — set jfrog_url and jfrog_access_token
+cp terraform/terraform.tfvars.example terraform/terraform.tfvars
+# Edit terraform/terraform.tfvars — set jfrog_url and jfrog_access_token
 
 # 2. Run the orchestrator
-chmod +x run.sh cleanup.sh
-./run.sh --auto    # applies every layer end-to-end (non-interactive)
+chmod +x terraform/run.sh terraform/cleanup.sh
+cd terraform && ./run.sh --auto    # applies every layer end-to-end (non-interactive)
 ```
 
 `./run.sh` applies layers in this order:
