@@ -136,16 +136,23 @@ fi
 
 # ── Helpers ────────────────────────────────────────────────────────────────
 
+# Per-layer terraform parallelism cap. JFrog SaaS rate-limits writes around
+# 10 concurrent calls ("HTTP 429: GRPC Server thread has reached its limits").
+# Destroy is just as API-heavy as apply (each repo removal makes a
+# project-disassociation call), so we cap the same way as run.sh.
+TF_PARALLELISM="${TF_PARALLELISM:-4}"
+
 # Run `terraform destroy` with optional -target args. Retries on the
 # specific "Project containing resources" 400 because JFrog's count cache
-# sometimes lags the actual repo deletions by a few seconds.
+# sometimes lags the actual repo deletions by a few seconds, AND on the
+# 429 GRPC pool exhaustion because that's transient.
 destroy_with_retry() {
   local label="$1"; shift
   local max_attempts=4
   local attempt=1
 
   while [ $attempt -le $max_attempts ]; do
-    if terraform destroy -auto-approve -no-color "$@" 2>&1 | tee /tmp/tf_destroy.out | tail -20; then
+    if terraform destroy -auto-approve -no-color -parallelism="$TF_PARALLELISM" "$@" 2>&1 | tee /tmp/tf_destroy.out | tail -20; then
       return 0
     fi
 
@@ -154,6 +161,14 @@ destroy_with_retry() {
       warn "  JFrog's project-resource-count cache hasn't refreshed yet. Sleeping 30s and retrying."
       attempt=$((attempt + 1))
       sleep 30
+      continue
+    fi
+
+    if grep -q "GRPC Server thread has reached its limits" /tmp/tf_destroy.out; then
+      warn "  $label: JFrog rate-limited (attempt $attempt/$max_attempts)."
+      warn "  Sleeping 20s and retrying — terraform's partial-apply behaviour will pick up where it left off."
+      attempt=$((attempt + 1))
+      sleep 20
       continue
     fi
 
@@ -240,9 +255,38 @@ destroy_platform_layer() {
   step "Phase 2d — members (no-op: users not managed by terraform yet)"
   info "  Skipped — no platform_user / project_user resources in this codebase."
 
-  step "Phase 2e — global stages"
-  (cd "$pdir" && destroy_with_retry "global stages" \
+  # ── Phase 2e — global stages ────────────────────────────────────────────
+  # null_resource.global_stages only has a *create*-time provisioner that
+  # POSTs to /access/api/v1/environments. There is no destroy provisioner,
+  # so `terraform destroy` removes the null_resource from state without
+  # telling JFrog to delete the env. We do that explicitly here.
+  #
+  # Note: if a stage name (e.g. PROD) is used by other repos outside this
+  # terraform's scope, JFrog will refuse to delete it. That's fine — we
+  # log and continue.
+  step "Phase 2e — global stages (destroy + explicit JFrog API delete)"
+  (cd "$pdir" && destroy_with_retry "null_resource.global_stages" \
     -target='module.platform.null_resource.global_stages')
+
+  # JFrog protects some built-in stages: DEV and PROD return 403 Forbidden
+  # on DELETE. Custom stages we add (e.g. QA, STG, UAT) can be deleted.
+  # We try all configured global_stage_names and treat 403 as expected.
+  info "  Deleting global stages via JFrog Access API:"
+  for stage in DEV QA STG PROD; do
+    http=$(curl -s -o /tmp/stage_del.json -w "%{http_code}" \
+      -X DELETE \
+      -H "Authorization: Bearer $TF_VAR_jfrog_access_token" \
+      "$TF_VAR_jfrog_url/access/api/v1/environments/$stage")
+    case "$http" in
+      204|200) info "    $stage: deleted ($http)" ;;
+      404)     info "    $stage: already gone (404)" ;;
+      403)     info "    $stage: protected built-in stage — kept (403, expected)" ;;
+      *)
+        msg=$(python3 -c "import json; print(json.load(open('/tmp/stage_del.json')).get('errors',[{}])[0].get('message',''))" 2>/dev/null || echo "")
+        warn "    $stage: HTTP $http — $msg"
+        ;;
+    esac
+  done
 
   step "Phase 2f — final sweep (anything missed)"
   (cd "$pdir" && destroy_with_retry "final sweep")
