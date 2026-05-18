@@ -17,6 +17,9 @@ permissions:
 env:
   TF_IN_AUTOMATION: "true"
   TF_INPUT: "false"
+  # Cap per-layer terraform parallelism. JFrog SaaS GRPC pool throws
+  # HTTP 429 around ~10 concurrent writes, so we keep it well under that.
+  TF_PARALLELISM: "4"
 
 jobs:
   detect-layers:
@@ -126,7 +129,7 @@ jobs:
           set -o pipefail
           terraform init -no-color | tail -5
           set +e
-          terraform plan -no-color -out=tfplan 2>&1 | tee plan.out
+          terraform plan -no-color -parallelism="$TF_PARALLELISM" -out=tfplan 2>&1 | tee plan.out
           ec=${PIPESTATUS[0]}
           set -e
           terraform show -no-color tfplan > plan.txt 2>/dev/null || cp plan.out plan.txt

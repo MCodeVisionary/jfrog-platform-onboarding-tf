@@ -13,6 +13,9 @@ permissions:
 env:
   TF_IN_AUTOMATION: "true"
   TF_INPUT: "false"
+  # Cap per-layer terraform parallelism. Refresh-only plan reads every
+  # resource from JFrog, which still hits API limits in burst.
+  TF_PARALLELISM: "4"
 
 jobs:
   drift-check:
@@ -76,7 +79,7 @@ jobs:
           terraform init -no-color | tail -5
           set +e
           # -detailed-exitcode: 0 = no changes, 1 = error, 2 = drift
-          terraform plan -refresh-only -detailed-exitcode -no-color 2>&1 | tee plan.out
+          terraform plan -refresh-only -detailed-exitcode -no-color -parallelism="$TF_PARALLELISM" 2>&1 | tee plan.out
           ec=${PIPESTATUS[0]}
           set -e
           {

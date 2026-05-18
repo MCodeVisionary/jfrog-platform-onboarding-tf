@@ -18,6 +18,9 @@ permissions:
 env:
   TF_IN_AUTOMATION: "true"
   TF_INPUT: "false"
+  # Cap per-layer terraform parallelism. JFrog SaaS GRPC pool throws
+  # HTTP 429 around ~10 concurrent writes, so we keep it well under that.
+  TF_PARALLELISM: "4"
 
 jobs:
   detect-layers:
@@ -74,7 +77,10 @@ jobs:
     runs-on: ubuntu-latest
     strategy:
       fail-fast: false
-      max-parallel: 5
+      # Total concurrent JFrog API calls during apply =
+      #   max-parallel (matrix jobs)  x  TF_PARALLELISM (per layer)
+      # = 2 x 4 = 8, well under JFrog's ~10-concurrent GRPC limit.
+      max-parallel: 2
       matrix:
         layer: ${{ fromJSON(needs.detect-layers.outputs.layers) }}
     steps:
@@ -127,7 +133,7 @@ jobs:
           set -o pipefail
           terraform init -no-color | tail -5
           set +e
-          terraform apply -auto-approve -no-color 2>&1 | tee apply.out
+          terraform apply -auto-approve -no-color -parallelism="$TF_PARALLELISM" 2>&1 | tee apply.out
           ec=${PIPESTATUS[0]}
           set -e
 
