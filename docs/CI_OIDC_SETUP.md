@@ -47,10 +47,13 @@ For `gh-actions-plan`:
 - Assign to user `gh-actions-plan`
 
 For `gh-actions-apply`:
-- Easiest: assign the built-in **Admin** group to this user
+- Easiest: assign the built-in **Admin** group to this user (covers everything below)
 - Tighter alternative: a custom permission with project-create/update,
   repository-create/update/delete, group-create/update, environment-create
-  across all repos, plus write on `terraform-state-local`
+  across all repos, plus write on `terraform-state-local`. **Also requires
+  Xray Admin** for managing curation policies (`xray_curation_policy`
+  resources) — without it, `terraform apply` on the platform layer fails
+  with 403 when creating/updating policies.
 
 ---
 
