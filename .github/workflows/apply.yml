@@ -90,6 +90,14 @@ jobs:
           terraform_version: "1.6.0"
           terraform_wrapper: false
 
+      - name: Configure git for private module access
+        # terraform init clones the module source from this same private repo
+        # via git+https — without this, git prompts for a username on the
+        # runner (no TTY) and fails. Rewrite https URLs to include the
+        # workflow's GITHUB_TOKEN as basic-auth.
+        run: |
+          git config --global url."https://oauth2:${{ secrets.GITHUB_TOKEN }}@github.com/".insteadOf "https://github.com/"
+
       - name: Terraform apply
         id: tfapply
         env:
