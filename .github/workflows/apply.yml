@@ -132,6 +132,47 @@ jobs:
           } >> "$GITHUB_OUTPUT"
           exit $ec
 
+      - name: Archive state snapshot to terraform-state-local/<layer>/_archive/
+        # On every successful apply, copy the new state to a timestamped +
+        # commit-SHA path. Gives us per-apply history without paying for an
+        # external state-versioning backend.
+        #
+        # Layout that accumulates over time:
+        #   terraform-state-local/projects/cmrc/
+        #     ├── terraform.tfstate                                 (always = latest)
+        #     └── _archive/
+        #         ├── 2026-05-18T22-50-26Z_341b0258.tfstate         (per-apply snapshot)
+        #         ├── 2026-05-19T09-32-01Z_b42b73f6.tfstate
+        #         └── …
+        #
+        # Each archive name encodes apply time + 8-char commit SHA so it ties
+        # back to a PR via `git log <sha>`. Restore = curl PUT from archive
+        # to live path.
+        #
+        # Best-effort: archive failure does NOT fail the workflow (the real
+        # apply already succeeded, and the latest state is on the live path).
+        if: steps.tfapply.outputs.status == 'success'
+        continue-on-error: true
+        env:
+          JF_URL:   ${{ vars.JF_URL }}
+          JF_USER:  ${{ vars.TF_HTTP_USERNAME }}
+          JF_TOK:   ${{ secrets.JFROG_ACCESS_TOKEN }}
+          LAYER:    ${{ matrix.layer }}
+          SHA:      ${{ github.sha }}
+        run: |
+          set -euo pipefail
+          TS=$(date -u +"%Y-%m-%dT%H-%M-%SZ")
+          SHORT_SHA="${SHA:0:8}"
+          BASE="$JF_URL/artifactory/terraform-state-local/$LAYER"
+          SRC_URL="$BASE/terraform.tfstate"
+          DST_URL="$BASE/_archive/${TS}_${SHORT_SHA}.tfstate"
+
+          # Stream live state -> archive path without writing to disk
+          curl -fsS -u "$JF_USER:$JF_TOK" "$SRC_URL" \
+            | curl -fsS -u "$JF_USER:$JF_TOK" -X PUT --data-binary @- "$DST_URL" \
+            > /dev/null
+          echo "Archived state: $DST_URL"
+
       - name: Comment on merged PR (red-bold drift banner)
         if: always() && needs.detect-layers.outputs.pr_number != ''
         uses: actions/github-script@v7

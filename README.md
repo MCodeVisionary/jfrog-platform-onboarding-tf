@@ -205,6 +205,77 @@ See [docs/CI_OIDC_SETUP.md](docs/CI_OIDC_SETUP.md) for the step-by-step (creatin
 
 ---
 
+## State versioning (per-apply history)
+
+Every successful `apply.yml` run archives the new state file to a timestamped + commit-SHA path inside the same Artifactory `terraform-state-local` repo. No external infrastructure, no extra cost.
+
+### Layout
+
+```
+terraform-state-local/
+├── platform/
+│   ├── terraform.tfstate                                ← always = latest
+│   └── _archive/
+│       ├── 2026-05-18T22-50-26Z_341b0258.tfstate        ← per-apply snapshot
+│       ├── 2026-05-19T09-32-01Z_b42b73f6.tfstate
+│       └── …
+├── curation/
+│   └── (same)
+└── projects/
+    ├── cmrc/  (same)
+    ├── vntg/  (same)
+    └── wlt/   (same)
+```
+
+Each archive filename is `<UTC-timestamp>_<short-commit-sha>.tfstate`. Sortable lexicographically by time, links back to the PR via `git log <sha>`.
+
+### When archives are written
+
+- **After every successful `apply.yml` run.** One archive per applied layer per merge to `main`.
+- **Never** by `pr-validate.yml` or `drift.yml` (they don't write state).
+
+The archive step is `continue-on-error: true` — if Artifactory is briefly unreachable for the copy, the workflow still passes (the real apply already succeeded and the latest state is on the live path).
+
+### Browsing history
+
+Via the Artifactory UI: **Artifactory → Tree** → `terraform-state-local` → `<layer>` → `_archive/` → drill into any file to download.
+
+Via the API:
+
+```bash
+curl -u "<user>:<token>" \
+  "https://mcodevisionaryorg.jfrog.io/artifactory/api/storage/terraform-state-local/projects/cmrc/_archive?list" \
+  | jq -r '.files[].uri'
+```
+
+### Restoring a previous state
+
+```bash
+USER="<your-jfrog-username>"
+TOK="<your-jfrog-access-token>"
+BASE="https://mcodevisionaryorg.jfrog.io/artifactory/terraform-state-local/projects/cmrc"
+ARCHIVE_FILE="_archive/2026-05-18T22-50-26Z_341b0258.tfstate"
+
+# Copy the archived version back into the live path
+curl -fsS -u "$USER:$TOK" "$BASE/$ARCHIVE_FILE" \
+  | curl -fsS -u "$USER:$TOK" -X PUT --data-binary @- "$BASE/terraform.tfstate"
+```
+
+After restore, the next `terraform plan` shows what would have to change to converge from the restored state to what's actually in JFrog. Use carefully — restoring state without thinking about whether JFrog matches it can create orphan resources or false-positive recreations.
+
+### Tying an archive back to a PR
+
+The 8-char commit SHA in the filename is the merge commit. Look it up:
+
+```bash
+git show 341b0258                # see the merge commit
+git log 341b0258 -1 --format="%s" # one-line subject
+```
+
+If it's an intake-bot PR, the subject is `intake: add <app> to project <key>` and the merge points back to the original Issue via the `Resolves #<N>` line in the PR body.
+
+---
+
 ## Xray Curation Policies
 
 Curation policies block packages at download time when they hit one of the conditions JFrog defines (CVE severity, malicious package, license, package age, etc.). They are platform-wide but **live in their own Terraform layer** (`terraform/curation/`) with their own state file — separate from the platform layer — because they use a different JFrog provider (`jfrog/xray`) and a different permission scope (Xray Admin).
