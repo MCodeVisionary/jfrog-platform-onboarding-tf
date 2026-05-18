@@ -171,6 +171,68 @@ See [docs/CI_OIDC_SETUP.md](docs/CI_OIDC_SETUP.md) for the step-by-step (creatin
 
 ---
 
+## Xray Curation Policies
+
+Curation policies block packages at download time when they hit one of the conditions JFrog defines (CVE severity, malicious package, license, package age, etc.). They are platform-wide and managed by the platform layer alongside projects/groups/stages.
+
+### Where they live
+
+| File | Purpose |
+|---|---|
+| [`terraform/platform/curation_policies.json`](terraform/platform/curation_policies.json) | The data file — one entry per policy. Edit this to add, remove, or modify policies. |
+| [`terraform/modules/platform/curation.tf`](terraform/modules/platform/curation.tf) | The Terraform resource block (`xray_curation_policy.this`) iterating the JSON. |
+| [`terraform/modules/platform/locals.tf`](terraform/modules/platform/locals.tf) | JSON parser that strips documentation-only `_comment` / `_condition` fields. |
+
+### Default policies shipped (17)
+
+| Risk type | Policy | Condition ID |
+|---|---|---|
+| security | `block_malicious_package` | 1 |
+| security | `block_cvss_9to10_with_fix_version` | 2 |
+| security | `block_cvss_9to10_with_or_without_fix_version` | 3 |
+| security | `block_cvss_7to9_with_fix_version` | 4 |
+| security | `block_cvss_7to9_with_or_without_fix_version` | 5 |
+| security | `block_cvss_4to7_with_fix_version` | 6 |
+| security | `block_cvss_4to7_with_or_without_fix_version` | 7 |
+| legal | `block_no_license` | 8 |
+| legal | `block_license_AGPL` | 9 |
+| legal | `block_license_GPL` | 10 |
+| legal | `block_license_LGPL` | 11 |
+| operational | `block_aged_package_without_newer_version` | 12 |
+| operational | `block_aged_package_with_newer_version` | 13 |
+| operational | `block_immature_packages_2d` (permissive) | 14 |
+| operational | `block_immature_packages_14d` (moderate) | 15 |
+| operational | `block_immature_packages_30d` (strict) | 16 |
+| operational | `block_image_not_offical_docker_hub` | 17 |
+
+All policies share the same shape: `scope = all_repos`, `policy_action = block`, `waiver_request_config = forbidden`. To deviate from this default per-policy, just add the override field directly on the JSON entry (e.g. `"waiver_request_config": "manual"`, `"decision_owners": ["..."]`, `"repo_exclude": [...]`).
+
+### Adding a new policy
+
+1. Pick the JFrog-side condition ID you want to enforce. The full catalog lives at JFrog UI → Administration → Curation → Conditions. Predefined conditions cover CVE bands, license bans, age, immaturity, Docker Hub officiality, and more.
+
+2. Add an entry to `terraform/platform/curation_policies.json`:
+
+   ```json
+   {
+     "name":         "block_my_new_thing",
+     "condition_id": "42",
+     "_condition":   "human-readable description (optional, ignored by terraform)"
+   }
+   ```
+
+3. Open a PR. `pr-validate.yml` plans the platform layer and posts the red-bold drift banner showing the new `xray_curation_policy.this["block_my_new_thing"]` resource. After merge, `apply.yml` creates it.
+
+### Removing a policy
+
+Delete its entry from `curation_policies.json`, open a PR. Terraform plan shows `-1` for `xray_curation_policy.this["..."]`. After merge, the policy is removed from JFrog Curation. No state surgery required.
+
+### Provider requirement
+
+The platform module v1.2.0+ requires the [`jfrog/xray ~> 3.0`](https://registry.terraform.io/providers/jfrog/xray/latest) provider, automatically installed during `terraform init`. The `gh-actions-apply` OIDC user used by CI needs **Xray Admin** scope — without it, apply fails with HTTP 403 when creating/updating curation policies. See [docs/CI_OIDC_SETUP.md](docs/CI_OIDC_SETUP.md) §1 for the permission setup.
+
+---
+
 ## Cleanup — removing all resources
 
 ```bash
