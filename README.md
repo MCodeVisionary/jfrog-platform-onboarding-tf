@@ -1,16 +1,20 @@
 # JFrog Platform — Terraform Configuration
 
-Provisions all JFrog Projects, IDP groups, lifecycle stages, and repositories from a single JSON config file (`projects.json`). No repository or project is hardcoded in Terraform — every resource is derived from the JSON at plan time.
+Provisions JFrog Projects, IDP groups, lifecycle stages, repositories, and Xray curation policies. State is sharded into 5 independent layers (1 platform + N projects + 1 curation), each with its own remote state file in Artifactory. Resource definitions are data-driven — repos come from per-project `repos.json` files, curation policies from `curation_policies.json`, project metadata from `platform/projects.json`. No repo/project/policy is hardcoded in Terraform.
+
+Teammates open requests via GitHub Issue Forms; an intake bot opens the PR; CI plans and applies. See [Self-service via GitHub Actions](#self-service-via-github-actions).
 
 ---
 
 ## Prerequisites
 
-| Tool | Version | Install |
-|------|---------|---------|
-| Terraform | >= 1.3.0 | `brew install terraform` / [download](https://developer.hashicorp.com/terraform/downloads) |
-| curl | any | pre-installed on macOS/Linux |
-| JFrog access token | Platform Admin scope | JFrog UI → Administration → Identity & Access → Access Tokens |
+| Tool | Version | Install | Used for |
+|------|---------|---------|---------|
+| Terraform | >= 1.3.0 | `brew install terraform` / [download](https://developer.hashicorp.com/terraform/downloads) | All `terraform plan` / `apply` / `init` |
+| curl | any | pre-installed on macOS/Linux | `null_resource` stage create/check, cleanup.sh stage delete |
+| jq | any | `brew install jq` | run.sh / cleanup.sh JSON parsing |
+| Python 3 | any | pre-installed on macOS | Decoding JFrog JWT to derive `TF_HTTP_USERNAME` in run.sh / cleanup.sh |
+| JFrog access token | Platform Admin scope (or Admin + Xray Admin for curation) | JFrog UI → Administration → Identity & Access → Access Tokens | Local dev + CI (via static auth — see [docs/CI_OIDC_SETUP.md](docs/CI_OIDC_SETUP.md)) |
 
 Verify Terraform is installed:
 ```bash
@@ -376,81 +380,79 @@ chmod +x cleanup.sh
 
 ---
 
-## Configuration — projects.json
+## Configuration files
 
-All project structure is defined in `projects.json`. To add a project, application, or package type — edit only the JSON. No `.tf` file changes needed.
+Project metadata and repo definitions are split across multiple JSON files matching the layer they belong to. **No `.tf` edits are needed to add a project or repo** — only the JSON.
 
-### Schema
-
-| Field | Type | Required | Description |
-|-------|------|----------|-------------|
-| `projects` | object | Yes | Top-level map. Key = display name (e.g. `"Commerce"`) |
-| `key` | string | Yes | JFrog project key — immutable, used as repo prefix. e.g. `cmrc` |
-| `display_name` | string | Yes | Name shown in JFrog UI |
-| `description` | string | No | Free-text description |
-| `max_storage_gib` | number | No | Storage quota in GiB. Default `500`. Use `-1` for unlimited |
-| `stages` | array | Yes | `["all"]` = global only. `["all","UAT"]` = global + project-specific UAT |
-| `applications[].name` | string | Yes | App name used in repo names. Lowercase |
-| `applications[].package_types` | array | Yes | Subset of: `npm`, `python`, `docker`, `helm`, `terraform` |
-
-### Stages logic
-
-```
-["all"]              →  DEV, QA, PROD              (global only)
-["all", "UAT"]       →  DEV, QA, PROD + UAT        (global + project-specific)
-["all","UAT","STG"]  →  DEV, QA, PROD + UAT + STG  (global + multiple)
-```
-
-### Example — add a new project
+### `platform/projects.json` — project metadata only
 
 ```json
 {
   "projects": {
-    "Payments": {
-      "key":             "pmts",
-      "display_name":    "Payments",
-      "description":     "Payments platform",
+    "Commerce": {
+      "key":             "cmrc",
+      "display_name":    "Commerce",
+      "description":     "Commerce product — payment and catalog applications",
       "max_storage_gib": 500,
-      "stages":          ["all"],
-      "applications": [
-        {
-          "name":          "invoice",
-          "package_types": ["npm", "docker", "helm"]
-        }
-      ]
+      "stages":          ["all"]
     }
   }
 }
 ```
 
-Then run:
-```bash
-./run.sh
-# or: terraform plan && terraform apply
+| Field | Type | Required | Description |
+|---|---|---|---|
+| Top-level keys | string | Yes | Display name (e.g. `"Commerce"`) — used by terraform as map key |
+| `key` | string | Yes | JFrog project key — immutable, lowercase, 3–6 chars; used as repo prefix |
+| `display_name` | string | Yes | Name shown in JFrog UI |
+| `description` | string | No | Free-text description |
+| `max_storage_gib` | number | No | Storage quota in GiB (default `500`) |
+| `stages` | array | Yes | `["all"]` = global stages only. `["all","UAT"]` = global + project-specific `<key>-UAT` |
+
+### `projects/<key>/repos.json` — applications and repos per project
+
+```json
+{
+  "project_key": "cmrc",
+  "applications": [
+    { "name": "payment", "package_types": ["npm", "python", "docker", "helm", "terraform"] },
+    { "name": "catalog", "package_types": ["npm", "docker", "helm"] }
+  ]
+}
 ```
 
----
+| Field | Type | Required | Description |
+|---|---|---|---|
+| `project_key` | string | Yes | Must match the parent dir name (`projects/<key>/`) |
+| `applications[].name` | string | Yes | Lowercase, 2–31 chars, letters/digits/hyphens, starts with letter/digit |
+| `applications[].package_types` | array | Yes | Subset of: `npm`, `python`, `terraform`, `docker`, `helm` |
 
-## Lifecycle Stages
+For each `(application × package_type × stage)` combo, the module generates:
+- One **local** repo: `<key>-<app>-<tech>-<stage>-local`
+- One **virtual** repo (DEV only): `<key>-<app>-<tech>-dev-virtual`
 
-`stages.tf` manages global stages (DEV, QA, PROD) with **check-before-create** logic:
+And one **remote** repo per unique `package_type` per project: `<key>-<tech>-remote` (shared across the project's apps).
 
-- Calls the JFrog REST API to check whether each stage exists
-- If it exists → skips with a log message
-- If it does not exist → creates it via POST
-- Safe to run multiple times — the check prevents duplicate creation
+### `curation/curation_policies.json` — Xray curation policies
 
----
+Covered separately in [§ Xray Curation Policies](#xray-curation-policies).
 
-## Known Issues
+### Stages logic
 
-### Double apply on first provisioning
+```
+["all"]              →  DEV, QA, STG, PROD             (global only, inherited by every project)
+["all", "UAT"]       →  DEV, QA, STG, PROD + <key>-UAT (global + this project's UAT)
+```
 
-When repos are first created, Artifactory briefly assigns them to the `default` project before the `project` resource claims them. A second `terraform apply` reassigns them correctly. This only happens on the **first** provisioning — the `run.sh` script handles it automatically.
+Global stages (DEV / QA / STG / PROD) are managed by the platform layer's `null_resource.global_stages`. DEV and PROD are JFrog-protected built-ins and persist even through cleanup; QA and STG are created/destroyed by the workflow.
 
-All repo resources carry `lifecycle { ignore_changes = [project_key] }` to prevent perpetual plan diffs after the second apply.
+### Adding a new project
 
-Reference: [jfrog/terraform-provider-artifactory#779](https://github.com/jfrog/terraform-provider-artifactory/issues/779)
+Don't hand-edit `platform/projects.json` and create `projects/<key>/` directories yourself — open a **New JFrog Project** Issue via the form (see [Self-service via GitHub Actions](#self-service-via-github-actions)) and the intake bot scaffolds everything for you.
+
+### Adding a repo to an existing project
+
+Open a **New repository** Issue. The bot appends an `applications[]` entry to `projects/<key>/repos.json` for you.
 
 ---
 
@@ -470,25 +472,48 @@ Do **not** include a trailing slash. Do **not** include `/artifactory` — Terra
 
 ### Generating an access token
 
-JFrog UI → **Administration** → **Identity & Access** → **Access Tokens** → **Generate Token**
+JFrog UI → **Administration** → **Identity & Access** → **Access Tokens** → **Generate Token**.
 
-Set the scope to **Platform Admin**. Copy the token — it is shown only once.
+Required scope:
+- **Platform Admin** for the platform + projects layers (creates projects, groups, repos, environments)
+- **Xray Admin** is additionally needed for the curation layer (managing `xray_curation_policy`)
 
-### Supply credentials in one of two ways
+Copy the token — it is shown only once.
 
-**Option A — `terraform.tfvars` (local development)**
+### Local development — `terraform.tfvars`
+
 ```hcl
 jfrog_url          = "https://acme.jfrog.io"
 jfrog_access_token = "eyJ..."
 ```
 
-**Option B — environment variables (CI/CD)**
-```bash
-export TF_VAR_jfrog_url="https://acme.jfrog.io"
-export TF_VAR_jfrog_access_token="eyJ..."
-```
+Never commit `terraform.tfvars` — it's in `.gitignore`. `run.sh` and `cleanup.sh` read it directly and export the right env vars:
+- `TF_VAR_jfrog_url`, `TF_VAR_jfrog_access_token` → fed to provider configs
+- `TF_HTTP_USERNAME` → derived from the token's JWT `sub` claim
+- `TF_HTTP_PASSWORD` → same value as the access token; used by the HTTP state backend
 
-Never commit `terraform.tfvars` — it is git-ignored by default.
+### CI/CD — GitHub Variables + Secret (static auth)
+
+GitHub Actions authenticates via static credentials stored in repo settings. See [docs/CI_OIDC_SETUP.md](docs/CI_OIDC_SETUP.md) for the full setup (~5 minutes), but in brief:
+
+| Storage | Name | Type | Value |
+|---|---|---|---|
+| Variables tab | `JF_URL` | Variable | `https://<your-org>.jfrog.io` |
+| Variables tab | `TF_HTTP_USERNAME` | Variable | The JFrog username (e.g. `maharship@jfrog.com`) |
+| Secrets tab | `JFROG_ACCESS_TOKEN` | **Secret** | The JFrog JWT access token |
+
+The three workflows (`pr-validate.yml`, `apply.yml`, `drift.yml`) reference these directly — no OIDC, no token exchange.
+
+### Why two env-var names for the same token (`TF_HTTP_PASSWORD` and `TF_VAR_jfrog_access_token`)
+
+The same JFrog token is consumed by two independent code paths in a single `terraform apply` run:
+
+| Consumer | Reads from | Why |
+|---|---|---|
+| HTTP state backend (`backend.tf`) | `TF_HTTP_PASSWORD` | Backend blocks can't reference Terraform variables — they're parsed before variables resolve. Backend's contract is the env-var name `TF_HTTP_*`. |
+| Provider configs (`providers.tf`) | `var.jfrog_access_token` (← `TF_VAR_jfrog_access_token`) | Standard Terraform variable plumbing |
+
+So a single secret in GitHub Storage, referenced twice in the workflow YAML. The duplication is a Terraform limitation, not our choice.
 
 ---
 
