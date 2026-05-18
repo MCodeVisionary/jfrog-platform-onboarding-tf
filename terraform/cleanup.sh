@@ -114,6 +114,21 @@ elif [ -z "${TF_VAR_jfrog_url:-}" ] || [ -z "${TF_VAR_jfrog_access_token:-}" ]; 
   exit 1
 fi
 
+# Backend auth (Artifactory HTTP backend) — username from JWT sub claim
+JF_USERNAME=$(echo "$TF_VAR_jfrog_access_token" | python3 -c '
+import sys, base64, json
+tok = sys.stdin.read().strip()
+payload = tok.split(".")[1]
+payload += "=" * (-len(payload) % 4)
+data = json.loads(base64.urlsafe_b64decode(payload))
+print(data.get("sub", "").rsplit("/", 1)[-1])
+' 2>/dev/null)
+
+if [ -n "$JF_USERNAME" ]; then
+  export TF_HTTP_USERNAME="$JF_USERNAME"
+  export TF_HTTP_PASSWORD="$TF_VAR_jfrog_access_token"
+fi
+
 # ── Helpers ────────────────────────────────────────────────────────────────
 
 # Run `terraform destroy` with optional -target args. Retries on the

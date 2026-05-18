@@ -98,6 +98,26 @@ EOF
   success "Credentials saved to terraform.tfvars"
 fi
 
+# ── Backend auth — Artifactory HTTP backend uses basic-auth.
+# JFrog requires the username portion match the token's subject claim, so
+# we decode the JWT and extract it.
+JF_USERNAME=$(echo "$TF_VAR_jfrog_access_token" | python3 -c '
+import sys, base64, json
+tok = sys.stdin.read().strip()
+payload = tok.split(".")[1]
+payload += "=" * (-len(payload) % 4)
+data = json.loads(base64.urlsafe_b64decode(payload))
+print(data.get("sub", "").rsplit("/", 1)[-1])
+' 2>/dev/null)
+
+if [ -z "$JF_USERNAME" ]; then
+  error "Could not decode username from access token. Token may be malformed."
+  exit 1
+fi
+export TF_HTTP_USERNAME="$JF_USERNAME"
+export TF_HTTP_PASSWORD="$TF_VAR_jfrog_access_token"
+info "Backend auth: TF_HTTP_USERNAME=$JF_USERNAME"
+
 # ── Discover project layers from filesystem ────────────────────────────────
 discover_projects() {
   find projects -mindepth 1 -maxdepth 1 -type d -exec basename {} \; | sort
@@ -117,10 +137,17 @@ apply_layer() {
     terraform init -input=false -no-color | tail -3
   fi
 
+  # Per-layer parallelism is capped to avoid overrunning JFrog's GRPC pool.
+  # JFrog SaaS instances start returning 429 "GRPC Server thread has reached
+  # its limits" around ~10 concurrent writes. Default terraform parallelism
+  # is 10 per layer, and we may run several layers concurrently, so this
+  # cap keeps total concurrent JFrog calls reasonable.
+  local PAR="${TF_PARALLELISM:-4}"
+
   if [ "$PLAN_ONLY" = "true" ]; then
-    terraform plan -no-color | tail -20
+    terraform plan -no-color -parallelism="$PAR" | tail -20
   else
-    terraform apply -auto-approve -no-color 2>&1 | tail -10
+    terraform apply -auto-approve -no-color -parallelism="$PAR" 2>&1 | tail -10
   fi
 
   popd >/dev/null
@@ -138,10 +165,14 @@ if [ "$PLATFORM_ONLY" = "true" ]; then
 fi
 
 # ── Phase 2: Project layers (parallel) ─────────────────────────────────────
+# Portable replacement for `mapfile` (bash 4+ builtin, not present in macOS bash 3.2)
+projects_to_apply=()
 if [ -n "$SINGLE_PROJECT" ]; then
-  projects_to_apply=("$SINGLE_PROJECT")
+  projects_to_apply+=("$SINGLE_PROJECT")
 else
-  mapfile -t projects_to_apply < <(discover_projects)
+  while IFS= read -r proj; do
+    [ -n "$proj" ] && projects_to_apply+=("$proj")
+  done < <(discover_projects)
 fi
 
 step "Applying ${#projects_to_apply[@]} project layer(s) in parallel"
