@@ -36,8 +36,10 @@ locals {
     ]
   ])
 
-  # Global lifecycle stage names
-  global_stage_names = ["DEV", "QA", "PROD"]
+  # Global lifecycle stage names — inherited by every project.
+  # Each per-project layer also generates *-{stage}-local repos for every
+  # stage listed here (driven by stage_env_map in modules/project-repos).
+  global_stage_names = ["DEV", "QA", "STG", "PROD"]
 
   # Per-project extra stages (e.g. UAT, STG) flattened for null_resource iteration
   project_extra_stages = {

@@ -18,9 +18,12 @@ locals {
     helm      = "https://charts.helm.sh/stable"
   }
 
+  # Stage suffix (used in repo keys) → JFrog environment label (used in
+  # project_environments). Must match global_stage_names in modules/platform.
   stage_env_map = {
     dev  = "DEV"
     qa   = "QA"
+    stg  = "STG"
     prod = "PROD"
   }
 
