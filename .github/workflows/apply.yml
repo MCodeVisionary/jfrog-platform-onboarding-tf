@@ -91,14 +91,13 @@ jobs:
           terraform_version: "1.6.0"
           terraform_wrapper: false
 
-      - name: Setup JFrog CLI (OIDC, apply scope)
+      - name: Setup JFrog CLI
         uses: jfrog/setup-jfrog-cli@v4
         id: jfrog-cli
         env:
           JF_URL: ${{ vars.JF_URL }}
         with:
-          oidc-provider-name: ${{ vars.OIDC_PROVIDER_NAME }}
-          oidc-audience: ${{ vars.OIDC_AUDIENCE_APPLY }}
+          oidc-provider-name: MCodeVisionary/jfrog-platform-onboarding-tf@github
 
       - name: Resolve auth details for Terraform
         id: jf
