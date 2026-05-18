@@ -83,14 +83,13 @@ jobs:
           terraform_version: "1.6.0"
           terraform_wrapper: false
 
-      - name: Setup JFrog CLI (OIDC, plan scope)
+      - name: Setup JFrog CLI
         uses: jfrog/setup-jfrog-cli@v4
         id: jfrog-cli
         env:
           JF_URL: ${{ vars.JF_URL }}
         with:
-          oidc-provider-name: ${{ vars.OIDC_PROVIDER_NAME }}
-          oidc-audience: ${{ vars.OIDC_AUDIENCE_PLAN }}
+          oidc-provider-name: MCodeVisionary/jfrog-platform-onboarding-tf@github
 
       - name: Resolve auth details for Terraform
         id: jf
@@ -98,7 +97,7 @@ jobs:
           set -euo pipefail
           token="${{ steps.jfrog-cli.outputs.oidc-token }}"
           if [ -z "$token" ]; then
-            echo "::error::OIDC token was not produced by setup-jfrog-cli — check vars.OIDC_PROVIDER_NAME and JFrog identity mapping."
+            echo "::error::OIDC token was not produced by setup-jfrog-cli — check the JFrog OIDC integration and identity mapping for MCodeVisionary/jfrog-platform-onboarding-tf@github."
             exit 1
           fi
           # Mask before any further usage

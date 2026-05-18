@@ -16,9 +16,19 @@ permissions:
 
 jobs:
   intake-new-repo:
+    # Fires when:
+    #   - Issue opened AND already carries the new-repo label, OR
+    #   - new-repo label was just added (Issue Forms sometimes apply labels
+    #     via a separate `labeled` event after `opened`, which the previous
+    #     condition missed), OR
+    #   - intake-retry label was added on an existing new-repo issue.
     if: |
-      (github.event.action == 'opened' && contains(github.event.issue.labels.*.name, 'new-repo')) ||
-      (github.event.action == 'labeled' && github.event.label.name == 'intake-retry' && contains(github.event.issue.labels.*.name, 'new-repo'))
+      contains(github.event.issue.labels.*.name, 'new-repo') &&
+      (
+        github.event.action == 'opened' ||
+        (github.event.action == 'labeled' &&
+          (github.event.label.name == 'new-repo' || github.event.label.name == 'intake-retry'))
+      )
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
@@ -44,9 +54,14 @@ jobs:
         run: python3 .github/scripts/intake_new_repo.py
 
   intake-new-project:
+    # Same firing semantics as intake-new-repo above.
     if: |
-      (github.event.action == 'opened' && contains(github.event.issue.labels.*.name, 'new-project')) ||
-      (github.event.action == 'labeled' && github.event.label.name == 'intake-retry' && contains(github.event.issue.labels.*.name, 'new-project'))
+      contains(github.event.issue.labels.*.name, 'new-project') &&
+      (
+        github.event.action == 'opened' ||
+        (github.event.action == 'labeled' &&
+          (github.event.label.name == 'new-project' || github.event.label.name == 'intake-retry'))
+      )
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
