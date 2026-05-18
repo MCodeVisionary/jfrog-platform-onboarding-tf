@@ -19,7 +19,7 @@
       "display_name":    "Wallet",
       "description":     "Wallet product — stream and store applications",
       "max_storage_gib": 500,
-      "stages":          ["all"]
+      "stages":          ["all", "UAT"]
     }
   }
 }

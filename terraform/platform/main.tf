@@ -1,5 +1,5 @@
 module "platform" {
-  source = "git::https://github.com/MCodeVisionary/jfrog-platform-onboarding-tf.git//terraform/modules/platform?ref=platform/v1.0.0"
+  source = "git::https://github.com/MCodeVisionary/jfrog-platform-onboarding-tf.git//terraform/modules/platform?ref=platform/v1.1.1"
 
   jfrog_url            = var.jfrog_url
   jfrog_access_token   = var.jfrog_access_token
