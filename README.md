@@ -8,6 +8,8 @@ Teammates open requests via GitHub Issue Forms; an intake bot opens the PR; CI p
 
 ## Prerequisites
 
+### Tools
+
 | Tool | Version | Install | Used for |
 |------|---------|---------|---------|
 | Terraform | >= 1.3.0 | `brew install terraform` / [download](https://developer.hashicorp.com/terraform/downloads) | All `terraform plan` / `apply` / `init` |
@@ -20,6 +22,32 @@ Verify Terraform is installed:
 ```bash
 terraform version
 ```
+
+### Environment variables that Terraform reads
+
+You don't normally export these by hand — `run.sh` and `cleanup.sh` derive them from `terraform.tfvars` automatically, and in CI they come from GitHub repo settings (see [docs/CI_OIDC_SETUP.md](docs/CI_OIDC_SETUP.md)). The list below is for reference, for cases where you run `terraform plan` / `apply` directly inside one of the layer directories without the wrapper scripts.
+
+| Env var | Required? | Value | Consumed by |
+|---|---|---|---|
+| `TF_VAR_jfrog_url` | yes | `https://<your-org>.jfrog.io` (no trailing slash, no `/artifactory`) | All `provider {}` blocks in every layer's `providers.tf` |
+| `TF_VAR_jfrog_access_token` | yes | The JFrog JWT access token (`eyJ…`) | All `provider {}` blocks (`artifactory`, `project`, `platform`, `xray`) |
+| `TF_HTTP_USERNAME` | yes | The JFrog username whose token is in `TF_HTTP_PASSWORD` (e.g. `maharship@jfrog.com`). **Must equal the token's `sub` claim** | The HTTP state backend (`backend.tf`) — basic-auth username for `terraform-state-local` |
+| `TF_HTTP_PASSWORD` | yes | Same value as `TF_VAR_jfrog_access_token` (the JFrog token) | The HTTP state backend — basic-auth password |
+| `TF_PARALLELISM` | optional | Integer (default `4`) | `run.sh` / `cleanup.sh` pass it as `terraform -parallelism=N` to cap concurrent JFrog API calls (avoids HTTP 429 from the GRPC pool) |
+| `TF_IN_AUTOMATION` | optional | `"true"` | Terraform itself — silences interactive hints. CI workflows set this; local dev usually doesn't bother |
+| `TF_INPUT` | optional | `"false"` | Terraform itself — disables interactive prompts so failures don't hang. CI workflows set this |
+
+**Why two env vars carry the same token** (`TF_HTTP_PASSWORD` and `TF_VAR_jfrog_access_token`): the HTTP state backend is initialized before Terraform variables resolve, so it can't reference `var.*` — it has its own `TF_HTTP_*` env-var contract. The providers use `TF_VAR_*` normal variable plumbing. One token, two consumers, two env-var names.
+
+#### Where they get set in each context
+
+| Context | How env vars get populated |
+|---|---|
+| **Local dev (`./run.sh`)** | `run.sh` reads `terraform.tfvars` and exports `TF_VAR_*` + `TF_HTTP_*`. Username for HTTP backend is decoded from the token's JWT `sub` claim at runtime. |
+| **CI (apply / pr-validate / drift)** | Workflow `env:` blocks read from `vars.JF_URL`, `vars.TF_HTTP_USERNAME` (GitHub repo Variables) and `secrets.JFROG_ACCESS_TOKEN` (GitHub repo Secret). |
+| **Manual `terraform plan` in a layer dir** | You export them yourself: `export TF_VAR_jfrog_url=… TF_VAR_jfrog_access_token=… TF_HTTP_USERNAME=… TF_HTTP_PASSWORD=…` before running terraform. |
+
+For the CI side, see [docs/CI_OIDC_SETUP.md](docs/CI_OIDC_SETUP.md) for the one-time setup of the GitHub Variables + Secret.
 
 ---
 
