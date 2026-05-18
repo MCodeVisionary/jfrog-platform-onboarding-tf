@@ -1,0 +1,72 @@
+name: Intake — turn Issue forms into PRs
+
+# Fires when:
+#   - A new Issue is opened with the `new-repo` or `new-project` label (the
+#     two Issue Forms in .github/ISSUE_TEMPLATE/ apply these labels for us)
+#   - An existing intake-blocked Issue is re-labelled `intake-retry` (lets
+#     a user re-trigger after editing the body to fix validation errors)
+on:
+  issues:
+    types: [opened, labeled]
+
+permissions:
+  contents: write       # commit + push the intake branch
+  pull-requests: write  # open the PR
+  issues: write         # comment back + add/remove labels
+
+jobs:
+  intake-new-repo:
+    if: |
+      (github.event.action == 'opened' && contains(github.event.issue.labels.*.name, 'new-repo')) ||
+      (github.event.action == 'labeled' && github.event.label.name == 'intake-retry' && contains(github.event.issue.labels.*.name, 'new-repo'))
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - name: Configure git for the bot
+        run: |
+          git config user.name  "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+      - name: Clear stale intake-blocked / intake-retry on this issue
+        env:
+          GH_TOKEN: ${{ github.token }}
+          ISSUE_NUMBER: ${{ github.event.issue.number }}
+        run: |
+          gh issue edit "$ISSUE_NUMBER" --remove-label intake-blocked || true
+          gh issue edit "$ISSUE_NUMBER" --remove-label intake-retry   || true
+      - name: Run new-repo intake script
+        env:
+          GH_TOKEN:     ${{ github.token }}
+          ISSUE_BODY:   ${{ github.event.issue.body }}
+          ISSUE_NUMBER: ${{ github.event.issue.number }}
+          ISSUE_AUTHOR: ${{ github.event.issue.user.login }}
+        run: python3 .github/scripts/intake_new_repo.py
+
+  intake-new-project:
+    if: |
+      (github.event.action == 'opened' && contains(github.event.issue.labels.*.name, 'new-project')) ||
+      (github.event.action == 'labeled' && github.event.label.name == 'intake-retry' && contains(github.event.issue.labels.*.name, 'new-project'))
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - name: Configure git for the bot
+        run: |
+          git config user.name  "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+      - name: Clear stale intake-blocked / intake-retry on this issue
+        env:
+          GH_TOKEN: ${{ github.token }}
+          ISSUE_NUMBER: ${{ github.event.issue.number }}
+        run: |
+          gh issue edit "$ISSUE_NUMBER" --remove-label intake-blocked || true
+          gh issue edit "$ISSUE_NUMBER" --remove-label intake-retry   || true
+      - name: Run new-project intake script
+        env:
+          GH_TOKEN:     ${{ github.token }}
+          ISSUE_BODY:   ${{ github.event.issue.body }}
+          ISSUE_NUMBER: ${{ github.event.issue.number }}
+          ISSUE_AUTHOR: ${{ github.event.issue.user.login }}
+        run: python3 .github/scripts/intake_new_project.py
