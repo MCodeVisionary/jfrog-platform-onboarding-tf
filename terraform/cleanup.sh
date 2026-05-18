@@ -71,7 +71,7 @@ echo -e "${RED}${BOLD}╔══════════════════�
 echo -e "${RED}${BOLD}║           JFROG PLATFORM CLEANUP                         ║${NC}"
 echo -e "${RED}${BOLD}║                                                          ║${NC}"
 if [ "$STATE_ONLY" = "true" ]; then
-echo -e "${RED}${BOLD}║  --state-only: wipes LOCAL state only, JFrog untouched.  ║${NC}"
+echo -e "${RED}${BOLD}║  --state-only: wipes LOCAL caches only, JFrog untouched. ║${NC}"
 elif [ -n "$SINGLE_PROJECT" ]; then
 echo -e "${RED}${BOLD}║  Destroying ONE project layer: $SINGLE_PROJECT                       ║${NC}"
 elif [ "$PLATFORM_ONLY" = "true" ]; then
@@ -89,13 +89,18 @@ if [ "$AUTO_APPROVE" = "false" ] && [ "$STATE_ONLY" = "false" ]; then
 fi
 
 # ── State-only mode ────────────────────────────────────────────────────────
+# State lives REMOTELY in Artifactory's terraform-state-local repo, so there
+# is no local tfstate file to delete. We only wipe the local provider/module
+# cache (.terraform/) and saved plans (tfplan). .terraform.lock.hcl is
+# preserved on purpose — it's source-controlled and pins provider versions.
 if [ "$STATE_ONLY" = "true" ]; then
-  step "Removing local Terraform state/cache from all layers"
-  find platform projects -name "terraform.tfstate*" -type f -delete 2>/dev/null || true
-  find platform projects -name ".terraform.lock.hcl" -type f -delete 2>/dev/null || true
+  step "Removing local Terraform caches (state lives remotely, untouched)"
   find platform projects -name "tfplan" -type f -delete 2>/dev/null || true
   find platform projects -type d -name ".terraform" -exec rm -rf {} + 2>/dev/null || true
-  success "Local state wiped. JFrog instance untouched."
+  # Belt-and-braces in case stray local state files exist from older runs
+  find platform projects -name "terraform.tfstate" -type f -delete 2>/dev/null || true
+  find platform projects -name "terraform.tfstate.backup" -type f -delete 2>/dev/null || true
+  success "Local caches wiped. JFrog (incl. remote state in terraform-state-local) untouched."
   exit 0
 fi
 
@@ -161,7 +166,15 @@ destroy_with_retry() {
 
 layer_has_state() {
   local layer_dir="$1"
-  [ -f "$layer_dir/terraform.tfstate" ] && [ -s "$layer_dir/terraform.tfstate" ]
+  # State is remote (Artifactory) — there's no local file to stat. After init,
+  # `terraform state list` returns 0 with at least one line if the remote state
+  # has resources. We treat any output as "has state".
+  if [ ! -d "$layer_dir/.terraform" ]; then
+    (cd "$layer_dir" && terraform init -input=false -no-color >/dev/null 2>&1) || return 1
+  fi
+  local n
+  n=$(cd "$layer_dir" && terraform state list 2>/dev/null | wc -l | tr -d ' ')
+  [ "${n:-0}" -gt 0 ]
 }
 
 ensure_init() {
@@ -185,6 +198,22 @@ destroy_project_layer() {
 }
 
 # Destroy the platform layer in phases.
+# Order (per project policy):
+#   repos → project → roles → groups → members → stages
+#
+# How each maps in this terraform:
+#   repos     = projects/<key>/ layers  (Phase 1 above, before this function runs)
+#   project   = module.platform.project.this
+#               Targeting it cascades (via depends_on) to anything that
+#               depends on it: project_group bindings AND
+#               null_resource.project_stages. So "destroy project" actually
+#               removes the project + its role-bindings + its project-stages
+#               in one step, in the correct internal order.
+#   roles     = module.platform.project_group.this — covered by the cascade
+#   groups    = module.platform.platform_group.{admin,write,read,security_admin,curation_approver}
+#   members   = (none — user resources are not currently managed by terraform)
+#   stages    = module.platform.null_resource.global_stages
+#               (project_stages was already destroyed by the project cascade)
 destroy_platform_layer() {
   local pdir="platform"
 
@@ -194,18 +223,13 @@ destroy_platform_layer() {
   fi
   ensure_init "$pdir"
 
-  step "Phase 2a — project_group bindings"
-  (cd "$pdir" && destroy_with_retry "project_group.this" -target='module.platform.project_group.this')
-
-  step "Phase 2b — projects"
+  step "Phase 2a — projects (cascades to role bindings + project stages)"
   (cd "$pdir" && destroy_with_retry "project.this" -target='module.platform.project.this')
 
-  step "Phase 2c — stages (global + project-specific)"
-  (cd "$pdir" && destroy_with_retry "null_resource stages" \
-    -target='module.platform.null_resource.global_stages' \
-    -target='module.platform.null_resource.project_stages')
+  step "Phase 2b — roles (any leftover role bindings not removed by cascade)"
+  (cd "$pdir" && destroy_with_retry "project_group.this" -target='module.platform.project_group.this')
 
-  step "Phase 2d — groups (per-project + platform-wide)"
+  step "Phase 2c — groups (per-project + platform-wide)"
   (cd "$pdir" && destroy_with_retry "platform groups" \
     -target='module.platform.platform_group.admin' \
     -target='module.platform.platform_group.write' \
@@ -213,7 +237,14 @@ destroy_platform_layer() {
     -target='module.platform.platform_group.security_admin' \
     -target='module.platform.platform_group.curation_approver')
 
-  step "Phase 2e — final sweep (anything missed)"
+  step "Phase 2d — members (no-op: users not managed by terraform yet)"
+  info "  Skipped — no platform_user / project_user resources in this codebase."
+
+  step "Phase 2e — global stages"
+  (cd "$pdir" && destroy_with_retry "global stages" \
+    -target='module.platform.null_resource.global_stages')
+
+  step "Phase 2f — final sweep (anything missed)"
   (cd "$pdir" && destroy_with_retry "final sweep")
 }
 
@@ -283,13 +314,17 @@ if [ "$remaining" -gt 0 ]; then
 fi
 
 # ── Local cleanup ─────────────────────────────────────────────────────────
+# State lives in Artifactory and is emptied by terraform destroy above; we
+# only wipe the local provider/module cache. .terraform.lock.hcl is
+# source-controlled, so we leave it alone.
 if [ "$AUTO_APPROVE" = "true" ]; then
-  step "Removing local state files"
-  find platform projects -name "terraform.tfstate*" -type f -delete 2>/dev/null || true
+  step "Removing local provider/module cache"
   find platform projects -name "tfplan" -type f -delete 2>/dev/null || true
   find platform projects -type d -name ".terraform" -exec rm -rf {} + 2>/dev/null || true
-  find platform projects -name ".terraform.lock.hcl" -type f -delete 2>/dev/null || true
-  success "Local state wiped."
+  # Belt-and-braces if any stray local state files exist
+  find platform projects -name "terraform.tfstate" -type f -delete 2>/dev/null || true
+  find platform projects -name "terraform.tfstate.backup" -type f -delete 2>/dev/null || true
+  success "Local caches wiped (.terraform.lock.hcl preserved — source-controlled)."
 fi
 
 echo ""
