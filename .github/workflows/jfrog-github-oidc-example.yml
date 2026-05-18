@@ -1,5 +1,11 @@
 name: "Setup JFrog CLI OIDC Example"
-on: push
+
+# Manual-trigger only. Kept as a minimal OIDC smoke test (validates JFrog
+# CLI auth via OIDC by running `jf rt ping`) but no longer fires on every
+# push. To run: GitHub UI → Actions tab → "Setup JFrog CLI OIDC Example"
+# → Run workflow.
+on:
+  workflow_dispatch:
 
 permissions:
   # This is required for requesting the OIDC token
