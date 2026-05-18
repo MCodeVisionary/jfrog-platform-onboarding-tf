@@ -18,5 +18,9 @@ terraform {
       source  = "hashicorp/null"
       version = "~> 3.0"
     }
+    xray = {
+      source  = "jfrog/xray"
+      version = "~> 3.0"
+    }
   }
 }

@@ -1,0 +1,90 @@
+{
+  "_comment": "Curation policies — block packages that hit any of these conditions. Each entry maps directly to an xray_curation_policy resource. condition_id values reference predefined JFrog Curation conditions (see https://jfrog.com/help/r/jfrog-security-user-guide/products/curation/conditions for the full catalog).",
+  "policies": [
+    {
+      "name":         "block_aged_package_with_newer_version",
+      "condition_id": "13",
+      "_condition":   "operational — Package version is aged (newer version available)"
+    },
+    {
+      "name":         "block_aged_package_without_newer_version",
+      "condition_id": "12",
+      "_condition":   "operational — Package version is aged (no newer version identified)"
+    },
+    {
+      "name":         "block_cvss_4to7_with_fix_version",
+      "condition_id": "6",
+      "_condition":   "security — CVE with CVSS score between 4.0 and 6.9 (fix version available)"
+    },
+    {
+      "name":         "block_cvss_4to7_with_or_without_fix_version",
+      "condition_id": "7",
+      "_condition":   "security — CVE with CVSS score between 4.0 and 6.9 (with or without a fix version available)"
+    },
+    {
+      "name":         "block_cvss_7to9_with_fix_version",
+      "condition_id": "4",
+      "_condition":   "security — CVE with CVSS score between 7.0 and 8.9 (fix version available)"
+    },
+    {
+      "name":         "block_cvss_7to9_with_or_without_fix_version",
+      "condition_id": "5",
+      "_condition":   "security — CVE with CVSS score between 7.0 and 8.9 (with or without a fix version available)"
+    },
+    {
+      "name":         "block_cvss_9to10_with_fix_version",
+      "condition_id": "2",
+      "_condition":   "security — CVE with CVSS score of 9 or above (fix version available)"
+    },
+    {
+      "name":         "block_cvss_9to10_with_or_without_fix_version",
+      "condition_id": "3",
+      "_condition":   "security — CVE with CVSS score of 9 or above (with or without a fix version available)"
+    },
+    {
+      "name":         "block_image_not_offical_docker_hub",
+      "condition_id": "17",
+      "_condition":   "operational — Image is not Docker Hub official"
+    },
+    {
+      "name":         "block_immature_packages_14d",
+      "condition_id": "15",
+      "_condition":   "operational — Package version is immature (moderate, 14d)"
+    },
+    {
+      "name":         "block_immature_packages_2d",
+      "condition_id": "14",
+      "_condition":   "operational — Package version is immature (permissive, 2d)"
+    },
+    {
+      "name":         "block_immature_packages_30d",
+      "condition_id": "16",
+      "_condition":   "operational — Package version is immature (strict, 30d)"
+    },
+    {
+      "name":         "block_license_AGPL",
+      "condition_id": "9",
+      "_condition":   "legal — Package license is GNU AGPL"
+    },
+    {
+      "name":         "block_license_GPL",
+      "condition_id": "10",
+      "_condition":   "legal — Package license is GNU GPL"
+    },
+    {
+      "name":         "block_license_LGPL",
+      "condition_id": "11",
+      "_condition":   "legal — Package license is GNU LGPL"
+    },
+    {
+      "name":         "block_malicious_package",
+      "condition_id": "1",
+      "_condition":   "security — Malicious package"
+    },
+    {
+      "name":         "block_no_license",
+      "condition_id": "8",
+      "_condition":   "legal — Package has no identified license"
+    }
+  ]
+}

@@ -18,3 +18,11 @@ output "project_read_groups" {
 output "platform_groups" {
   value = module.platform.platform_groups
 }
+
+output "curation_policy_count" {
+  value = module.platform.curation_policy_count
+}
+
+output "curation_policy_names" {
+  value = module.platform.curation_policy_names
+}
