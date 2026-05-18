@@ -65,6 +65,112 @@ terraform apply   # second apply required only on first provisioning
 
 ---
 
+## Self-service via GitHub Actions
+
+Teams don't need to clone the repo or run Terraform locally to add a project or a repository. They open a GitHub Issue using one of the two Issue Forms, and the intake bot opens a PR with the right file edits. After CODEOWNERS approval, merging triggers the apply workflow which talks to JFrog.
+
+### End-to-end flow
+
+```
+1. GitHub UI → New Issue → pick a template:
+     • "New repository (within an existing project)"   → label: new-repo
+     • "New JFrog Project"                              → label: new-project
+
+2. Issue submitted.
+   .github/workflows/intake.yml fires automatically.
+
+3. Bot parses the form body, validates, then either:
+   ✘ Comments errors back + applies 'intake-blocked' label, leaves issue open.
+     Fix the body, then add label 'intake-retry' to re-trigger.
+   ✓ Opens an "[intake]" PR with the file edits and labels:
+       intake, new-repo   (for new-repo flow)
+       intake, new-project (for new-project flow)
+     Comments back on the issue with the PR URL.
+
+4. PR Validate workflow plans every affected layer, posts a red-bold
+   "Drift has been detected" comment per layer with the full plan inside
+   a <details> block.
+
+5. CODEOWNERS auto-requests review:
+     terraform/projects/<key>/  →  the project's team
+     platform/                  →  platform-admins
+
+6. Reviewer approves and merges (no auto-merge; explicit human gate).
+
+7. Apply workflow fires on merge to main:
+     - Plan & apply only the affected layers (path-filtered)
+     - Per-layer parallelism capped to 4 (JFrog rate-limit)
+     - Posts a red-bold "Drift has been detected" callout on the merged
+       PR with apply status + resource counts + log tail
+     - Original Issue auto-closes (PR body says "Resolves #<n>")
+
+8. JFrog now has the new repos / project, project_key set at create-time.
+```
+
+### The two Issue Forms
+
+#### `.github/ISSUE_TEMPLATE/new-repo.yml` — add a repo to an existing project
+
+| Form field | Type | What the bot does with it |
+|---|---|---|
+| **Project** | dropdown (`cmrc` / `vntg` / `wlt`) | Selects which `terraform/projects/<key>/repos.json` to edit |
+| **Application name** | text, lowercase | New `applications[]` entry name |
+| **Package types** | multi-select checkboxes (npm, python, terraform, docker, helm) | Populates `package_types` array |
+| **Rationale** | textarea, optional | Copied into the PR body for context |
+| **Confirmations** | checkboxes, required | Validation guard rails |
+
+For each `(package_type × stage)` combination, the apply workflow creates one local repo. Plus one shared remote per tech (shared across the project), and one virtual aggregator per app+tech for DEV. E.g. `payment + [npm, docker]` adds 8 new repos.
+
+#### `.github/ISSUE_TEMPLATE/new-project.yml` — create a new JFrog Project
+
+| Form field | Type | What the bot does with it |
+|---|---|---|
+| **Project key** | text, 3–6 chars lowercase | Used as the repo-key prefix everywhere; immutable |
+| **Display name** | text | Shown in the JFrog UI |
+| **Description** | textarea | Visible in JFrog and in the PR body |
+| **Storage quota (GiB)** | dropdown (100 / 250 / 500 / 1000 / 2000) | Sets `max_storage_in_gibibytes` on the project resource |
+| **GitHub team owning this project** | text (`@org/team-handle`) | Added to `.github/CODEOWNERS` to route future PRs |
+| **Initial applications** | textarea, optional, format `name: type1, type2` per line | Pre-populates `repos.json` |
+| **Confirmations** | checkboxes, required | Validation guard rails |
+
+What the new-project PR contains:
+- Entry added to `terraform/platform/projects.json`
+- Scaffolds `terraform/projects/<key>/` with `main.tf` (module ref pinned to the latest tagged `project-repos` version), `providers.tf`, `variables.tf`, `versions.tf`, `outputs.tf`, `backend.tf` (remote state path), `repos.json` (pre-populated if `Initial applications` was filled)
+- CODEOWNERS rule routing `/terraform/projects/<key>/` to the owning team plus `@MCodeVisionary/platform-admins`
+
+### Validation rejections
+
+If a teammate submits invalid input — e.g. `Project key: AB` (too short) or asks for a package type we don't support — the bot replies on the issue:
+
+> ⚠️ **Intake blocked — request needs revision.**
+>
+> The form input failed validation:
+> - Project key `AB` must be lowercase, 3–6 chars, letters/digits only, starting with a letter.
+>
+> Edit the issue body to fix the items above, then add the label `intake-retry` to retry, or open a fresh issue.
+
+And applies the `intake-blocked` label. The teammate can edit the Issue body (GitHub allows it post-submit), apply `intake-retry`, and the bot re-runs. No PR is opened until validation passes.
+
+### Workflow files
+
+| File | Trigger | Purpose |
+|---|---|---|
+| [.github/workflows/intake.yml](.github/workflows/intake.yml) | `issues: opened` or `issues: labeled` with `intake-retry` | Parse issue body, validate, open PR |
+| [.github/workflows/pr-validate.yml](.github/workflows/pr-validate.yml) | `pull_request` on `terraform/**` | `terraform plan` per affected layer, post red-bold comment |
+| [.github/workflows/apply.yml](.github/workflows/apply.yml) | `push` to `main` on `terraform/**` | `terraform apply` per affected layer, post red-bold comment |
+| [.github/workflows/drift.yml](.github/workflows/drift.yml) | `schedule: cron '0 9 * * *'` daily | `plan -refresh-only` per layer, open Issue if drift |
+| [.github/scripts/intake_new_repo.py](.github/scripts/intake_new_repo.py) | Called by `intake.yml` | Body parser + validator + repos.json editor for new-repo |
+| [.github/scripts/intake_new_project.py](.github/scripts/intake_new_project.py) | Called by `intake.yml` | Body parser + validator + scaffolder + CODEOWNERS editor for new-project |
+| [.github/scripts/_intake_lib.py](.github/scripts/_intake_lib.py) | Imported by both intake scripts | Issue Forms parser, `gh`/`git` wrappers, failure path |
+
+### Setup the workflows need (one-time, ~15 min)
+
+The intake workflow itself runs with no external setup — it uses `GITHUB_TOKEN` to create branches, push, open PRs, and comment on Issues. But the *downstream* `pr-validate.yml` and `apply.yml` workflows talk to JFrog via OIDC, which needs a one-time setup in JFrog and GitHub:
+
+See [docs/CI_OIDC_SETUP.md](docs/CI_OIDC_SETUP.md) for the step-by-step (creating 2 JFrog service users, one OIDC integration, two identity mappings, four GitHub repo variables, plus branch protection on `main`).
+
+---
+
 ## Cleanup — removing all resources
 
 ```bash
