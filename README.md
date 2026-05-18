@@ -21,27 +21,46 @@ terraform version
 
 ## File Structure
 
+State is sharded into **5 separate layers** (one platform + N projects + one curation), each with its own remote state file in Artifactory. Modules are git-pinned by tag so different consumers can upgrade independently.
+
 ```
 terraform/
-├── projects.json                # Single source of truth — edit this to add/change projects
-├── versions.tf                  # Provider constraints (artifactory, project, platform, null)
-├── variables.tf                 # Three inputs: jfrog_url, jfrog_access_token, config_file
-├── locals.tf                    # Parses JSON; computes all resource combinations
-├── providers.tf                 # Provider configuration
-├── stages.tf                    # Global stages (DEV, QA, PROD) — check-before-create
-├── groups.tf                    # IDP group shells per project
-├── projects.tf                  # JFrog Projects + project-specific stages
-├── repositories_npm.tf          # npm repos (local/remote/virtual)
-├── repositories_python.tf       # Python repos
-├── repositories_terraform.tf    # Terraform repos
-├── repositories_docker.tf       # Docker repos
-├── repositories_helm.tf         # Helm repos
-├── outputs.tf                   # Project keys, group names, repo counts, virtual URLs
-├── README.md                    # This file
-├── run.sh                       # Idempotent run script (recommended entry point)
-├── cleanup.sh                   # Remove all JFrog resources created by Terraform
-└── terraform.tfvars.example     # Copy to terraform.tfvars and populate
+├── platform/                          # ROOT LAYER 1 — projects, groups, stages, role bindings
+│   ├── main.tf                        # calls module platform/v1.2.1 (git-pinned)
+│   ├── providers.tf  versions.tf      # artifactory + project + platform + null providers
+│   ├── variables.tf  outputs.tf
+│   ├── backend.tf                     # remote state: terraform-state-local/platform/
+│   └── projects.json                  # project metadata (no repo definitions)
+│
+├── projects/                          # ROOT LAYERS 2..N — one root config per JFrog Project
+│   ├── cmrc/                          #   Commerce
+│   │   ├── main.tf                    #   calls module project-repos/v1.1.0
+│   │   ├── providers.tf  versions.tf  #   artifactory provider only
+│   │   ├── variables.tf  outputs.tf
+│   │   ├── backend.tf                 #   remote state: terraform-state-local/projects/cmrc/
+│   │   └── repos.json                 #   THIS project's apps + package types
+│   ├── vntg/  …                       #   Vantage
+│   └── wlt/   …                       #   Wallet
+│
+├── curation/                          # ROOT LAYER N+1 — Xray curation policies (LAST in apply order)
+│   ├── main.tf                        # calls module curation/v1.0.0
+│   ├── providers.tf  versions.tf      # jfrog/xray ~> 3.0 only
+│   ├── variables.tf  outputs.tf
+│   ├── backend.tf                     # remote state: terraform-state-local/curation/
+│   └── curation_policies.json         # platform-wide block policies (17 shipped)
+│
+├── modules/                           # REUSABLE MODULES — pinned by git tag
+│   ├── platform/                      # tagged platform/v1.0.0 → v1.2.1
+│   ├── project-repos/                 # tagged project-repos/v1.0.0 → v1.1.0
+│   └── curation/                      # tagged curation/v1.0.0
+│
+├── terraform.tfvars                   # local credentials (gitignored)
+├── terraform.tfvars.example
+├── run.sh                             # orchestrator: platform → projects/* (parallel) → curation
+└── cleanup.sh                         # orchestrator: curation → projects/* (parallel) → platform
 ```
+
+The reusable modules under `modules/` are also versioned independently via git tags (e.g. `platform/v1.2.1`, `project-repos/v1.1.0`, `curation/v1.0.0`). Root configs pin the module source by `?ref=<tag>` so bumping one module doesn't affect the others.
 
 ---
 
@@ -52,15 +71,30 @@ terraform/
 cp terraform.tfvars.example terraform.tfvars
 # Edit terraform.tfvars — set jfrog_url and jfrog_access_token
 
-# 2. Run via the helper script (recommended)
-chmod +x run.sh
-./run.sh
+# 2. Run the orchestrator
+chmod +x run.sh cleanup.sh
+./run.sh --auto    # applies every layer end-to-end (non-interactive)
+```
 
-# — OR run manually —
-terraform init
-terraform plan
-terraform apply
-terraform apply   # second apply required only on first provisioning
+`./run.sh` applies layers in this order:
+
+| Phase | Layer | Resources |
+|---|---|---|
+| 1 | `platform/` | Projects, per-project groups (ADMIN/WRITE/READ), platform-wide groups (security-admin, curation-approver), global stages (DEV/QA/STG/PROD), group→role bindings |
+| 2 | `projects/*/` in parallel | All repos for each project (local + remote + virtual × stages × package types) |
+| 3 | `curation/` (LAST) | Xray curation policies (platform-wide; runs last because it has no dependency on platform/projects and any Curation API hiccup shouldn't block provisioning) |
+
+To operate on a single layer in isolation:
+
+```bash
+# Just one project's repos
+./run.sh --auto --project cmrc
+
+# Just the platform layer
+./run.sh --auto --platform-only
+
+# Just curation
+cd terraform/curation && terraform init && terraform apply -auto-approve
 ```
 
 ---
@@ -389,7 +423,12 @@ Never commit `terraform.tfvars` — it is git-ignored by default.
 
 ## Providers
 
-- [jfrog/artifactory](https://registry.terraform.io/providers/jfrog/artifactory/latest)
-- [jfrog/project](https://registry.terraform.io/providers/jfrog/project/latest)
-- [jfrog/platform](https://registry.terraform.io/providers/jfrog/platform/latest)
-- [hashicorp/null](https://registry.terraform.io/providers/hashicorp/null/latest)
+Each layer pulls in only what it needs. No layer pulls all five.
+
+| Provider | Used by layer(s) | Purpose |
+|---|---|---|
+| [jfrog/artifactory `~> 12.5`](https://registry.terraform.io/providers/jfrog/artifactory/latest) | `platform/`, `projects/*/` | Local / remote / virtual repos |
+| [jfrog/project `~> 1.9`](https://registry.terraform.io/providers/jfrog/project/latest) | `platform/` | JFrog Project resources + `project_group` role bindings |
+| [jfrog/platform `~> 2.2`](https://registry.terraform.io/providers/jfrog/platform/latest) | `platform/` | IDP `platform_group` shells |
+| [jfrog/xray `~> 3.0`](https://registry.terraform.io/providers/jfrog/xray/latest) | `curation/` | `xray_curation_policy` resources |
+| [hashicorp/null `~> 3.0`](https://registry.terraform.io/providers/hashicorp/null/latest) | `platform/` | `null_resource` provisioners for global and project-specific stages (the platform provider has no native stage resource yet) |
