@@ -100,12 +100,60 @@ def issue_comment(issue_number: int, body: str) -> None:
     gh("issue", "comment", str(issue_number), "--body", body)
 
 
+# Default colors for the labels the bot relies on. Used by ensure_labels()
+# when a label needs to be auto-created on first use.
+_DEFAULT_LABEL_COLORS = {
+    "intake":          "0e8a16",  # green   — bot-opened PR
+    "new-repo":        "1d76db",  # blue    — repo intake
+    "new-project":     "5319e7",  # purple  — project intake
+    "intake-blocked":  "d93f0b",  # red     — validation failed, needs revision
+    "intake-retry":    "fbca04",  # yellow  — user-applied; tells bot to re-run
+}
+
+
+def ensure_labels(labels: list[str]) -> None:
+    """Create any missing labels in the repo (idempotent).
+
+    `gh pr create --label X` and `gh issue edit --add-label X` both fail
+    hard if X doesn't exist. The bot's first run on a fresh repo would hit
+    this every time, so we self-heal: check what exists, create what's
+    missing. Safe to call repeatedly.
+    """
+    # List existing labels once
+    r = gh("label", "list", "--json", "name", "--limit", "200", check=False)
+    if r.returncode != 0:
+        # Non-fatal — fall through and let downstream commands fail with a
+        # clearer error if it really matters
+        print(f"::warning::could not list labels: {r.stderr}", file=sys.stderr)
+        return
+    try:
+        existing = {item["name"] for item in json.loads(r.stdout or "[]")}
+    except Exception:
+        existing = set()
+
+    for label in labels:
+        if label in existing:
+            continue
+        color = _DEFAULT_LABEL_COLORS.get(label, "ededed")  # neutral grey fallback
+        desc = f"Auto-created by intake bot for label '{label}'"
+        cr = gh("label", "create", label, "--color", color, "--description", desc, check=False)
+        if cr.returncode == 0:
+            print(f"created missing label: {label}")
+        elif "already exists" in (cr.stderr or "").lower():
+            pass  # raced with another job; fine
+        else:
+            print(f"::warning::could not create label '{label}': {cr.stderr}", file=sys.stderr)
+
+
 def issue_add_label(issue_number: int, label: str) -> None:
+    ensure_labels([label])
     gh("issue", "edit", str(issue_number), "--add-label", label, check=False)
 
 
 def open_pr(branch: str, title: str, body: str, labels: list[str]) -> str:
     """Create a PR against main from the given branch. Returns the PR URL."""
+    if labels:
+        ensure_labels(labels)
     args = [
         "pr", "create",
         "--base", "main",
@@ -135,13 +183,59 @@ def git(*args: str, check: bool = True) -> subprocess.CompletedProcess:
 
 
 def git_new_branch(name: str) -> None:
+    """Check out a branch named `name`. Idempotent: works whether the
+    branch is brand new, exists locally, or exists only on the remote.
+
+    Needed because a previous bot run might have left the branch behind
+    after a partial failure (push succeeded, PR open failed). On re-trigger
+    we want to pick up where we left off, not crash on 'branch already exists'.
+    """
+    # Already on this branch?
+    cur = git("rev-parse", "--abbrev-ref", "HEAD", check=False).stdout.strip()
+    if cur == name:
+        return
+    # Exists locally?
+    local = git("rev-parse", "--verify", name, check=False)
+    if local.returncode == 0:
+        git("checkout", name)
+        return
+    # Exists on remote?
+    git("fetch", "origin", check=False)
+    remote = git("ls-remote", "--heads", "origin", name, check=False).stdout.strip()
+    if remote:
+        git("checkout", "-b", name, f"origin/{name}")
+        return
+    # Fresh branch
     git("checkout", "-b", name)
 
 
 def git_commit_and_push(message: str, branch: str) -> None:
+    """Commit any pending changes (no-op if working tree clean) and push.
+
+    Idempotent against re-runs: if the previous run already committed and
+    pushed the same edits, both commit and push are skipped/no-op'd.
+    """
     git("add", "-A")
-    git("commit", "-m", message)
-    git("push", "-u", "origin", branch)
+    status = git("status", "--porcelain", check=False).stdout.strip()
+    if status:
+        git("commit", "-m", message)
+    else:
+        print("No changes to commit — working tree clean (likely resuming a previous run)")
+    # Push always; if remote already matches, this is a no-op.
+    git("push", "-u", "origin", branch, check=False)
+
+
+def find_pr_for_branch(branch: str) -> dict | None:
+    """Return the open PR (any state) for `branch`, or None if no PR exists.
+    Used so the bot doesn't try to create a duplicate PR on re-trigger.
+    """
+    r = gh("pr", "list", "--head", branch, "--state", "all",
+           "--json", "url,number,state", check=False)
+    try:
+        prs = json.loads(r.stdout or "[]")
+    except Exception:
+        return None
+    return prs[0] if prs else None
 
 
 # ---------------------------------------------------------------------------

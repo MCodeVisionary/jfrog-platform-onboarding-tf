@@ -18,7 +18,7 @@ from _intake_lib import (  # noqa: E402
     env,
     env_int,
     fail_validation,
-    gh,
+    find_pr_for_branch,
     git_commit_and_push,
     git_new_branch,
     issue_comment,
@@ -102,22 +102,25 @@ def main() -> None:
     if errors:
         fail_validation(issue_number, errors)
 
+    # ---- Branch first (so we operate on the right tree if resuming) ------
+    branch = f"intake/repo/{issue_number}"
+    git_new_branch(branch)
+
     # ---- Edit repos.json --------------------------------------------------
     repos_json = PROJECTS_DIR / project_key / "repos.json"
     with repos_json.open() as f:
         cfg = json.load(f)
-    cfg.setdefault("applications", []).append({
-        "name": application,
-        "package_types": package_types,
-    })
-    with repos_json.open("w") as f:
-        json.dump(cfg, f, indent=2)
-        f.write("\n")
-    print(f"Edited {repos_json}")
+    apps = cfg.setdefault("applications", [])
+    if not any(a.get("name") == application for a in apps):
+        apps.append({"name": application, "package_types": package_types})
+        with repos_json.open("w") as f:
+            json.dump(cfg, f, indent=2)
+            f.write("\n")
+        print(f"Edited {repos_json}")
+    else:
+        print(f"{repos_json} already contains `{application}` — leaving as-is")
 
-    # ---- Commit + push + PR ----------------------------------------------
-    branch = f"intake/repo/{issue_number}"
-    git_new_branch(branch)
+    # ---- Commit + push (no-op if previous run already did this) ----------
     git_commit_and_push(
         message=(
             f"intake: add `{application}` to project `{project_key}`\n\n"
@@ -126,6 +129,17 @@ def main() -> None:
         ),
         branch=branch,
     )
+
+    # ---- If a PR already exists for this branch, reuse it ----------------
+    existing = find_pr_for_branch(branch)
+    if existing:
+        print(f"PR already open for {branch}: {existing.get('url')}")
+        issue_comment(
+            issue_number,
+            f"Intake PR already exists: {existing.get('url')}\n\n"
+            "Re-trigger absorbed (no duplicate PR opened).",
+        )
+        return
 
     pr_body_lines = [
         f"Resolves #{issue_number} — auto-generated from the `new-repo` Issue form.",

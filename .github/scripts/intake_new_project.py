@@ -19,6 +19,7 @@ from _intake_lib import (  # noqa: E402
     env,
     env_int,
     fail_validation,
+    find_pr_for_branch,
     git_commit_and_push,
     git_new_branch,
     issue_comment,
@@ -292,31 +293,39 @@ def main() -> None:
     if errors:
         fail_validation(issue_number, errors)
 
-    # ---- Apply edits ------------------------------------------------------
+    # ---- Branch first (so we operate on the right tree if resuming) ------
+    branch = f"intake/project/{issue_number}"
+    git_new_branch(branch)
+
+    # ---- Apply edits (each step is idempotent — no-op if already done) ---
     # 1. Add to platform/projects.json
     with PLATFORM_PROJECTS_JSON.open() as f:
         existing = json.load(f)
-    existing["projects"][display_name] = {
-        "key": project_key,
-        "display_name": display_name,
-        "description": description,
-        "max_storage_gib": max_storage_gib,
-        "stages": ["all"],
-    }
-    with PLATFORM_PROJECTS_JSON.open("w") as f:
-        json.dump(existing, f, indent=2)
-        f.write("\n")
-    print(f"Edited {PLATFORM_PROJECTS_JSON}")
+    if display_name not in existing["projects"]:
+        existing["projects"][display_name] = {
+            "key": project_key,
+            "display_name": display_name,
+            "description": description,
+            "max_storage_gib": max_storage_gib,
+            "stages": ["all"],
+        }
+        with PLATFORM_PROJECTS_JSON.open("w") as f:
+            json.dump(existing, f, indent=2)
+            f.write("\n")
+        print(f"Edited {PLATFORM_PROJECTS_JSON}")
+    else:
+        print(f"{PLATFORM_PROJECTS_JSON} already has `{display_name}` — leaving as-is")
 
     # 2. Scaffold projects/<key>/
-    scaffold_project_layer(project_key, apps)
+    if not (PROJECTS_DIR / project_key).exists():
+        scaffold_project_layer(project_key, apps)
+    else:
+        print(f"projects/{project_key}/ already scaffolded — leaving as-is")
 
-    # 3. Update CODEOWNERS
+    # 3. Update CODEOWNERS (function is already idempotent)
     add_codeowners_line(project_key, owning_team)
 
-    # ---- Commit + push + PR ----------------------------------------------
-    branch = f"intake/project/{issue_number}"
-    git_new_branch(branch)
+    # ---- Commit + push (no-op if previous run already did this) ----------
     git_commit_and_push(
         message=(
             f"intake: create project `{project_key}` ({display_name})\n\n"
@@ -326,6 +335,17 @@ def main() -> None:
         ),
         branch=branch,
     )
+
+    # ---- If a PR already exists for this branch, reuse it ----------------
+    existing_pr = find_pr_for_branch(branch)
+    if existing_pr:
+        print(f"PR already open for {branch}: {existing_pr.get('url')}")
+        issue_comment(
+            issue_number,
+            f"Intake PR already exists: {existing_pr.get('url')}\n\n"
+            "Re-trigger absorbed (no duplicate PR opened).",
+        )
+        return
 
     pr_body = "\n".join([
         f"Resolves #{issue_number} — auto-generated from the `new-project` Issue form.",
