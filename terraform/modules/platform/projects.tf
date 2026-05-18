@@ -54,15 +54,19 @@ resource "null_resource" "project_stages" {
       LIST=$(curl -s -H "Authorization: Bearer $TOKEN" \
         "$URL/access/api/v1/projects/$PROJECT/environments")
 
-      if echo "$LIST" | grep -q "\"name\":\"$PROJECT-$STAGE\""; then
-        echo "  Stage $STAGE already exists for project $PROJECT — skipping."
+      # JFrog requires project-specific environment names to be prefixed with
+      # the project key (e.g. "wlt-UAT"). We accept the un-prefixed stage in
+      # config and add the prefix when creating.
+      FULL_NAME="$PROJECT-$STAGE"
+      if echo "$LIST" | grep -q "\"name\":\"$FULL_NAME\""; then
+        echo "  Stage $FULL_NAME already exists for project $PROJECT — skipping."
       else
-        echo "  Creating project-specific stage $STAGE for $PROJECT..."
+        echo "  Creating project-specific stage $FULL_NAME for $PROJECT..."
         HTTP=$(curl -s -o /tmp/proj_stage_response.json -w "%%{http_code}" \
           -X POST \
           -H "Authorization: Bearer $TOKEN" \
           -H "Content-Type: application/json" \
-          -d "{\"name\":\"$STAGE\"}" \
+          -d "{\"name\":\"$FULL_NAME\"}" \
           "$URL/access/api/v1/projects/$PROJECT/environments")
 
         if [ "$HTTP" = "200" ] || [ "$HTTP" = "201" ] || [ "$HTTP" = "204" ] || [ "$HTTP" = "409" ]; then
