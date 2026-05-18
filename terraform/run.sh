@@ -154,17 +154,13 @@ apply_layer() {
   success "$label complete."
 }
 
+# Apply order: platform -> projects/* (parallel) -> curation.
+# Curation is last because it has no dependency on platform/project resources
+# and its failure should not block the actual provisioning (project + repos).
+
 # ── Phase 1: Platform layer (control plane) ────────────────────────────────
-# Phase 1a: platform  (projects, groups, stages, role bindings)
-# Phase 1b: curation  (Xray curation policies) — depends on a working JFrog
-#           Curation service but not on any platform resource, so it could
-#           run in parallel with phase 1a. We run it serially after platform
-#           anyway to keep total concurrent JFrog API load predictable.
 if [ -z "$SINGLE_PROJECT" ]; then
   apply_layer "platform" "platform"
-  if [ -d "curation" ]; then
-    apply_layer "curation" "curation"
-  fi
 fi
 
 if [ "$PLATFORM_ONLY" = "true" ]; then
@@ -206,6 +202,15 @@ done
 if [ "$fail_count" -gt 0 ]; then
   error "$fail_count project layer(s) failed."
   exit 1
+fi
+
+# ── Phase 3: Curation layer (LAST) ─────────────────────────────────────────
+# Curation policies are platform-wide but independent of project/repo
+# lifecycle. Running last means a curation API hiccup never blocks the
+# actual provisioning. If you only want to apply curation (no platform/
+# projects), cd terraform/curation && terraform apply directly.
+if [ -z "$SINGLE_PROJECT" ] && [ -d "curation" ]; then
+  apply_layer "curation" "curation"
 fi
 
 success "All layers complete."

@@ -312,36 +312,13 @@ if [ "$PLATFORM_ONLY" = "true" ]; then
   exit 0
 fi
 
-# ── Phase 1: project layers (parallel) ────────────────────────────────────
-step "Phase 1: Destroying project layers (parallel)"
-pids=()
-for proj_dir in projects/*/; do
-  [ -d "$proj_dir" ] || continue
-  proj=$(basename "$proj_dir")
-  (destroy_project_layer "$proj_dir" 2>&1 | sed "s/^/[$proj] /") &
-  pids+=($!)
-done
+# Destroy order is the reverse of apply order in run.sh:
+#   apply:   platform -> projects/* -> curation
+#   destroy: curation -> projects/* -> platform
 
-phase1_fail=0
-for pid in "${pids[@]}"; do
-  wait "$pid" || phase1_fail=$((phase1_fail + 1))
-done
-
-if [ $phase1_fail -gt 0 ]; then
-  error "$phase1_fail project layer(s) failed. Not proceeding to curation/platform destroy."
-  error "Resolve project-layer failures and re-run cleanup."
-  exit 1
-fi
-success "Phase 1 complete."
-
-# ── Phase 2: curation layer ───────────────────────────────────────────────
-# Curation has no dependency on platform resources, but we destroy it BEFORE
-# the platform layer so the Xray provider talks to a still-warm control
-# plane. Destroying curation last (after platform projects/groups are
-# already gone) hasn't shown problems on JFrog SaaS but the ordering is
-# kept conservative.
+# ── Phase 1: curation layer ───────────────────────────────────────────────
 if [ -d "curation" ]; then
-  step "Phase 2: Destroying curation layer"
+  step "Phase 1: Destroying curation layer"
   if layer_has_state "curation"; then
     ensure_init "curation"
     (cd curation && destroy_with_retry "curation")
@@ -350,6 +327,28 @@ if [ -d "curation" ]; then
     info "  Curation layer has no state — skipping."
   fi
 fi
+
+# ── Phase 2: project layers (parallel) ────────────────────────────────────
+step "Phase 2: Destroying project layers (parallel)"
+pids=()
+for proj_dir in projects/*/; do
+  [ -d "$proj_dir" ] || continue
+  proj=$(basename "$proj_dir")
+  (destroy_project_layer "$proj_dir" 2>&1 | sed "s/^/[$proj] /") &
+  pids+=($!)
+done
+
+phase2_fail=0
+for pid in "${pids[@]}"; do
+  wait "$pid" || phase2_fail=$((phase2_fail + 1))
+done
+
+if [ $phase2_fail -gt 0 ]; then
+  error "$phase2_fail project layer(s) failed. Not proceeding to platform destroy."
+  error "Resolve project-layer failures and re-run cleanup."
+  exit 1
+fi
+success "Phase 2 complete."
 
 # ── Phase 3: platform layer ───────────────────────────────────────────────
 destroy_platform_layer
