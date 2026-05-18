@@ -13,9 +13,3 @@ variable "projects_config_file" {
   description = "Path to the JSON file describing project metadata (no repo definitions)."
   type        = string
 }
-
-variable "curation_policies_file" {
-  description = "Path to the JSON file describing platform-wide Xray curation policies. Set to null/\"\" to skip managing curation policies."
-  type        = string
-  default     = ""
-}

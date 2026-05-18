@@ -1,18 +1,11 @@
 # ---------------------------------------------------------------------------
-# Curation Policies — platform-wide (scope = all_repos by default).
+# Xray Curation Policies
 #
-# Driven entirely by local.curation_policies (parsed from
-# var.curation_policies_file). Set the variable to "" or leave the JSON's
-# policies array empty to manage zero policies — useful in dev / test
-# environments where Curation isn't licensed.
-#
-# Each entry references a JFrog-side condition by ID. The condition itself
-# (its risk_type, supported_pkg_types, on_demand flag, param_values, etc.)
-# is managed by JFrog — we only declare the policy that USES it. See:
+# Each entry in local.curation_policies maps to one xray_curation_policy
+# resource. Conditions themselves (their risk_type, supported_pkg_types,
+# param_values, etc.) are managed by JFrog — we declare only the *policy*
+# that USES a condition, referenced by condition_id. See:
 #   https://jfrog.com/help/r/jfrog-security-user-guide/products/curation/conditions
-#
-# All policies are block + forbidden waivers, matching the security posture
-# encoded in platform/curation_policies.json.
 # ---------------------------------------------------------------------------
 
 resource "xray_curation_policy" "this" {

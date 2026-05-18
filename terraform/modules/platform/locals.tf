@@ -54,28 +54,4 @@ locals {
     ]) : combo.id => combo
   }
 
-  # ---------------------------------------------------------------------------
-  # Curation policies — keyed by policy name. Empty when curation_policies_file
-  # is unset, so the xray_curation_policy resource for_each is a no-op.
-  # Fields beginning with "_" (e.g. "_comment", "_condition") are documentation
-  # only and are stripped before passing to the resource.
-  # ---------------------------------------------------------------------------
-  curation_policies = (
-    var.curation_policies_file == "" ? {} :
-    {
-      for p in jsondecode(file(var.curation_policies_file)).policies :
-      p.name => {
-        name                  = p.name
-        condition_id          = tostring(p.condition_id)
-        scope                 = lookup(p, "scope", "all_repos")
-        policy_action         = lookup(p, "policy_action", "block")
-        waiver_request_config = lookup(p, "waiver_request_config", "forbidden")
-        repo_include          = lookup(p, "repo_include", null)
-        repo_exclude          = lookup(p, "repo_exclude", null)
-        pkg_types_include     = lookup(p, "pkg_types_include", null)
-        notify_emails         = lookup(p, "notify_emails", null)
-        decision_owners       = lookup(p, "decision_owners", null)
-      }
-    }
-  )
 }
