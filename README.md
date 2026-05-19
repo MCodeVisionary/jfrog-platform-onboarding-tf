@@ -4,6 +4,8 @@ Provisions JFrog Projects, IDP groups, lifecycle stages, repositories, and Xray 
 
 Teammates open requests via GitHub Issue Forms; an intake bot opens the PR; CI plans and applies. See [Self-service via GitHub Actions](#self-service-via-github-actions).
 
+For visual overviews — full architecture, self-service sequence, module/state versioning, apply/cleanup ordering — see [docs/architecture.md](docs/architecture.md).
+
 ---
 
 ## Prerequisites
