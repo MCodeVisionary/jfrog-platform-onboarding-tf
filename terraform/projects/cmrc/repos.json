@@ -24,10 +24,12 @@
       "package_types": [
         "npm"
       ]
+    },
+    {
+      "name": "container",
+      "package_types": [
+        "python"
+      ]
     }
   ]
 }
-
-
-
-
