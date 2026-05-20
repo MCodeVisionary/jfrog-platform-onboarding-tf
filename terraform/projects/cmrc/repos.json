@@ -24,10 +24,12 @@
       "package_types": [
         "npm"
       ]
+    },
+    {
+      "name": "bolt",
+      "package_types": [
+        "docker"
+      ]
     }
   ]
 }
-
-
-
-
