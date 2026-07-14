@@ -13,6 +13,10 @@ resource "artifactory_local_docker_v2_repository" "this" {
 
   project_key          = var.project_key
   project_environments = [each.value.env]
+
+  lifecycle {
+    ignore_changes = [xray_index]
+  }
 }
 
 resource "artifactory_remote_docker_repository" "this" {
