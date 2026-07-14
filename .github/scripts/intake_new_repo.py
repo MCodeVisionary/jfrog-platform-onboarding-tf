@@ -29,7 +29,10 @@ from _intake_lib import (  # noqa: E402
 )
 
 
-SUPPORTED_PACKAGE_TYPES = ["npm", "python", "terraform", "docker", "helm", "nuget", "maven", "huggingface"]
+SUPPORTED_PACKAGE_TYPES = [
+    "npm", "python", "terraform", "docker", "helm", "nuget", "maven", "huggingface",
+    "rpm", "debian", "cargo", "alpine", "go",
+]
 PROJECTS_DIR = REPO_ROOT / "terraform" / "projects"
 PLATFORM_PROJECTS_JSON = REPO_ROOT / "terraform" / "platform" / "projects.json"
 
