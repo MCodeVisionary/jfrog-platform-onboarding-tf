@@ -213,11 +213,11 @@ Teams don't need to clone the repo or run Terraform locally to add a project or 
 |---|---|---|
 | **Project** | dropdown (`cmrc` / `vntg` / `wlt`) | Selects which `terraform/projects/<key>/repos.json` to edit |
 | **Application name** | text, lowercase | New `applications[]` entry name |
-| **Package types** | multi-select checkboxes (npm, python, terraform, docker, helm) | Populates `package_types` array |
+| **Package types** | multi-select checkboxes (npm, python, terraform, docker, helm, nuget, maven, huggingface) | Populates `package_types` array |
 | **Rationale** | textarea, optional | Copied into the PR body for context |
 | **Confirmations** | checkboxes, required | Validation guard rails |
 
-For each `(package_type × stage)` combination, the apply workflow creates one local repo. Plus one shared remote per tech (shared across the project), and one virtual aggregator per app+tech for DEV. E.g. `payment + [npm, docker]` adds 8 new repos.
+For each `(package_type × stage)` combination, the apply workflow creates one local repo. Plus one shared remote per tech (shared across the project), and one virtual aggregator per app+tech for DEV. E.g. `payment + [npm, docker]` adds 8 new repos. Exception: `huggingface` has no virtual repository type in the provider, so it only gets local + remote repos.
 
 #### `.github/ISSUE_TEMPLATE/new-project.yml` — create a new JFrog Project
 
@@ -485,11 +485,11 @@ Project metadata and repo definitions are split across multiple JSON files match
 |---|---|---|---|
 | `project_key` | string | Yes | Must match the parent dir name (`projects/<key>/`) |
 | `applications[].name` | string | Yes | Lowercase, 2–31 chars, letters/digits/hyphens, starts with letter/digit |
-| `applications[].package_types` | array | Yes | Subset of: `npm`, `python`, `terraform`, `docker`, `helm` |
+| `applications[].package_types` | array | Yes | Subset of: `npm`, `python`, `terraform`, `docker`, `helm`, `nuget`, `maven`, `huggingface` |
 
 For each `(application × package_type × stage)` combo, the module generates:
 - One **local** repo: `<key>-<app>-<tech>-<stage>-local`
-- One **virtual** repo (DEV only): `<key>-<app>-<tech>-dev-virtual`
+- One **virtual** repo (DEV only): `<key>-<app>-<tech>-dev-virtual` — except `huggingface`, which has no virtual repository type in the provider
 
 And one **remote** repo per unique `package_type` per project: `<key>-<tech>-remote` (shared across the project's apps).
 

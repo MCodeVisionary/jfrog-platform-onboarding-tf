@@ -48,8 +48,9 @@ body:
         - label: terraform
         - label: docker
         - label: helm
-    validations:
-      required: true
+        - label: nuget
+        - label: maven
+        - label: huggingface
 
   - type: textarea
     id: rationale
