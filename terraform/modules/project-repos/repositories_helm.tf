@@ -12,7 +12,7 @@ resource "artifactory_local_helm_repository" "this" {
   project_environments = [each.value.env]
 
   lifecycle {
-    ignore_changes = [force_non_duplicate_chart, force_metadata_name_version]
+    ignore_changes = [force_non_duplicate_chart, force_metadata_name_version, xray_index]
   }
 }
 
