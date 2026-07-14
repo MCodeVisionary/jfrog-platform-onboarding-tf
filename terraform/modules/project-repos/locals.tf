@@ -19,11 +19,16 @@ locals {
     nuget       = "https://www.nuget.org/"
     maven       = "https://repo1.maven.org/maven2/"
     huggingface = "https://huggingface.co"
+    rpm         = "http://mirror.centos.org/centos/"
+    debian      = "http://archive.ubuntu.com/ubuntu/"
+    cargo       = "https://static.crates.io"
+    alpine      = "https://dl-cdn.alpinelinux.org/alpine/"
+    go          = "https://proxy.golang.org/"
   }
 
   # package_types with no virtual repository type in the provider — excluded
   # from virtual_repos generation below.
-  techs_without_virtual = ["huggingface"]
+  techs_without_virtual = ["huggingface", "cargo"]
 
   # Stage suffix (used in repo keys) → JFrog environment label (used in
   # project_environments). Must match global_stage_names in modules/platform.
@@ -62,6 +67,11 @@ locals {
   local_repos_nuget       = { for k, v in local.local_repos : k => v if v.tech == "nuget" }
   local_repos_maven       = { for k, v in local.local_repos : k => v if v.tech == "maven" }
   local_repos_huggingface = { for k, v in local.local_repos : k => v if v.tech == "huggingface" }
+  local_repos_rpm         = { for k, v in local.local_repos : k => v if v.tech == "rpm" }
+  local_repos_debian      = { for k, v in local.local_repos : k => v if v.tech == "debian" }
+  local_repos_cargo       = { for k, v in local.local_repos : k => v if v.tech == "cargo" }
+  local_repos_alpine      = { for k, v in local.local_repos : k => v if v.tech == "alpine" }
+  local_repos_go          = { for k, v in local.local_repos : k => v if v.tech == "go" }
 
   # ---------------------------------------------------------------------------
   # REMOTE repositories
@@ -83,6 +93,11 @@ locals {
   remote_repos_nuget       = { for k, v in local.remote_repos : k => v if v.tech == "nuget" }
   remote_repos_maven       = { for k, v in local.remote_repos : k => v if v.tech == "maven" }
   remote_repos_huggingface = { for k, v in local.remote_repos : k => v if v.tech == "huggingface" }
+  remote_repos_rpm         = { for k, v in local.remote_repos : k => v if v.tech == "rpm" }
+  remote_repos_debian      = { for k, v in local.remote_repos : k => v if v.tech == "debian" }
+  remote_repos_cargo       = { for k, v in local.remote_repos : k => v if v.tech == "cargo" }
+  remote_repos_alpine      = { for k, v in local.remote_repos : k => v if v.tech == "alpine" }
+  remote_repos_go          = { for k, v in local.remote_repos : k => v if v.tech == "go" }
 
   # ---------------------------------------------------------------------------
   # VIRTUAL repositories — DEV stage only
@@ -111,4 +126,8 @@ locals {
   virtual_repos_helm      = { for k, v in local.virtual_repos : k => v if v.tech == "helm" }
   virtual_repos_nuget     = { for k, v in local.virtual_repos : k => v if v.tech == "nuget" }
   virtual_repos_maven     = { for k, v in local.virtual_repos : k => v if v.tech == "maven" }
+  virtual_repos_rpm       = { for k, v in local.virtual_repos : k => v if v.tech == "rpm" }
+  virtual_repos_debian    = { for k, v in local.virtual_repos : k => v if v.tech == "debian" }
+  virtual_repos_alpine    = { for k, v in local.virtual_repos : k => v if v.tech == "alpine" }
+  virtual_repos_go        = { for k, v in local.virtual_repos : k => v if v.tech == "go" }
 }

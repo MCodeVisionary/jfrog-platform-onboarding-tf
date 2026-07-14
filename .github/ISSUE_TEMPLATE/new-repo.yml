@@ -51,6 +51,11 @@ body:
         - label: nuget
         - label: maven
         - label: huggingface
+        - label: rpm
+        - label: debian
+        - label: cargo
+        - label: alpine
+        - label: go
 
   - type: textarea
     id: rationale
